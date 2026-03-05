@@ -1,0 +1,42 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Person",
+  "description": "A single person record",
+  "type": "object",
+  "required": ["age"],
+  "anyOf": [
+    { "required": ["firstName"] },
+    { "required": ["lastName"] }
+  ],
+  "properties": {
+    "firstName": {
+      "type": "string",
+      "description": "The person's first name"
+    },
+    "lastName": {
+      "type": "string",
+      "description": "The person's last name"
+    },
+    "age": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "The person's age in years"
+    },
+    "address": {
+      "type": "object",
+      "description": "The person's postal address",
+      "required": ["street"],
+      "oneOf": [
+        { "required": ["city"] },
+        { "required": ["state"] }
+      ],
+      "properties": {
+        "street":     { "type": "string" },
+        "city":       { "type": "string" },
+        "state":      { "type": "string" },
+        "postalCode": { "type": "string" },
+        "country":    { "type": "string" }
+      }
+    }
+  }
+}

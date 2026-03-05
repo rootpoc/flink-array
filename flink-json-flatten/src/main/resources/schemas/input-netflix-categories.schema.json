@@ -1,0 +1,44 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "title": "Netflix Categories Nested",
+  "required": ["application", "search_engines"],
+  "properties": {
+    "application": {
+      "type": "object",
+      "required": ["name", "app_id", "version"],
+      "properties": {
+        "name":    {"type": "string"},
+        "app_id":  {"type": "string"},
+        "version": {"type": "string"}
+      }
+    },
+    "search_engines": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["category", "name", "list", "pinned", "last_used"],
+        "properties": {
+          "category":  {"type": "string"},
+          "name":      {"type": "string"},
+          "list":      {"type": "array", "items": {"type": "string"}, "minItems": 1},
+          "pinned":    {"type": "boolean"},
+          "last_used": {"type": "integer"},
+          "imdb": {
+            "type": "object",
+            "properties": {
+              "id":          {"type": "string"},
+              "title":       {"type": "string"},
+              "year":        {"type": "string"},
+              "rated":       {"type": "string"},
+              "genre":       {"type": "string"},
+              "director":    {"type": "string"},
+              "actors":      {"type": "string"},
+              "imdb_rating": {"type": "number"}
+            }
+          }
+        }
+      }
+    }
+  }
+}

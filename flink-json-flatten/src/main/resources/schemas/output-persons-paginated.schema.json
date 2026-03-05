@@ -1,0 +1,30 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "PersonsPaginated",
+  "description": "Paginated collection of Person objects produced by the array-splitter stage",
+  "type": "object",
+  "required": ["persons", "index", "total", "count"],
+  "properties": {
+    "persons": {
+      "type": "array",
+      "description": "Person objects contained in this page",
+      "items": {
+        "$ref": "input-person.schema.json"
+      }
+    },
+    "index": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "0-based index of the current page within the total page set"
+    },
+    "total": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Total number of pages in the split result"
+    },
+    "count": {
+      "type": "integer",
+      "description": "Number of persons contained in this page"
+    }
+  }
+}

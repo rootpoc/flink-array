@@ -1,0 +1,26 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "title": "Netflix Flat Entry",
+  "required": ["app_name", "category", "name", "pinned", "last_used", "list_0"],
+  "properties": {
+    "app_name":     {"type": "string"},
+    "app_id":       {"type": "string"},
+    "app_version":  {"type": "string"},
+    "category":     {"type": "string"},
+    "name":         {"type": "string"},
+    "pinned":       {"type": "boolean"},
+    "last_used":    {"type": "integer"},
+    "list_0":       {"type": "string"},
+    "list_1":       {"type": ["string", "null"]},
+    "entry_index":  {"type": "integer"},
+    "imdb_id":      {"type": "string"},
+    "imdb_title":   {"type": "string"},
+    "imdb_year":    {"type": "string"},
+    "imdb_rated":   {"type": "string"},
+    "imdb_genre":   {"type": "string"},
+    "imdb_director":{"type": "string"},
+    "imdb_actors":  {"type": "string"},
+    "imdb_rating":  {"type": "number"}
+  }
+}

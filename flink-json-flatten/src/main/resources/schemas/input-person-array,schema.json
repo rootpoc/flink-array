@@ -1,0 +1,44 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "PersonCollection",
+  "description": "An object containing an array of person records",
+  "type": "object",
+  "required": ["persons"],
+  "properties": {
+    "persons": {
+      "type": "array",
+      "description": "List of person records",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["firstName", "lastName", "age"],
+        "properties": {
+          "firstName": {
+            "type": "string",
+            "description": "The person's first name"
+          },
+          "lastName": {
+            "type": "string",
+            "description": "The person's last name"
+          },
+          "age": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "The person's age in years"
+          },
+          "address": {
+            "type": "object",
+            "description": "The person's postal address",
+            "properties": {
+              "street":     { "type": "string" },
+              "city":       { "type": "string" },
+              "state":      { "type": "string" },
+              "postalCode": { "type": "string" },
+              "country":    { "type": "string" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,39 @@
+# Field mapping configuration
+#
+# Maps output field names (keys) to input field references or template expressions (values).
+#
+# Expression syntax:
+#   plain field name         →  direct copy:   age: age
+#   ${field}                 →  field ref:      name: "${firstName}"
+#   ${f1} text ${f2}        →  concat:         name: "${firstName} ${lastName}"
+#   * in field path          →  array wildcard: persons.*.name matches any index (0, 1, 2, …)
+#
+# For array schemas include the pagination pass-through fields explicitly.
+# For flat schemas omit them.
+
+field-mapping:
+
+  # ── Pagination (pass-through from ValidateSplitFlattenFunction) ────────────
+  index: index
+  total: total
+  count: count
+
+  # ── Array content: rename search_engines items → persons items ─────────────
+  # Direct renames
+  persons.*.category:  search_engines.*.category
+  persons.*.name:      search_engines.*.name
+  persons.*.pinned:    search_engines.*.pinned
+  persons.*.last_used: search_engines.*.last_used
+
+  # Concat example: build a label from category and name
+  persons.*.label: "${search_engines.*.category}: ${search_engines.*.name}"
+
+  # Nested object pass-through
+  persons.*.imdb.director: search_engines.*.imdb.director
+  persons.*.imdb.title:    search_engines.*.imdb.title
+
+  # ── Flat schema example (uncomment when input schema has no array) ─────────
+  # name:           "${firstName} ${lastName}"
+  # age:            age
+  # address.street: address.street
+  # address.city:   address.city

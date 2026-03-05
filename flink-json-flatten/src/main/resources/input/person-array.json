@@ -1,0 +1,41 @@
+{
+  "persons": [
+    {
+      "firstName": "John",
+      "lastName": "Doe",
+      "age": 30
+    },
+    {
+      "firstName": "Jane",
+      "lastName": "Smith",
+      "age": 25,
+      "address": {
+        "city": "New York",
+        "country": "USA"
+      }
+    },
+    {
+      "firstName": "Michael",
+      "lastName": "Johnson",
+      "age": 42,
+      "address": {
+        "street": "123 Oak Street",
+        "city": "Chicago",
+        "state": "IL",
+        "postalCode": "60601",
+        "country": "USA"
+      }
+    },
+    {
+      "lastName": "Davis",
+      "age": 19,
+      "address": {
+        "street": "456 Maple Avenue",
+        "city": "Los Angeles",
+        "state": "CA",
+        "postalCode": "90001",
+        "country": "USA"
+      }
+    }
+  ]
+}

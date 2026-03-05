@@ -1,0 +1,58 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# JsonFlattenPipeline — runtime configuration
+#
+# Pass parameters to the Flink job as CLI args:
+#   flink run -c com.pipeline.JsonFlattenPipeline flink-json-flatten-fat.jar \
+#       --kafka.bootstrap-servers broker1:9092,broker2:9092 \
+#       ...
+#
+# All keys below map 1:1 to PipelineConfig.fromParameterTool() parameter names.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Kafka ─────────────────────────────────────────────────────────────────────
+kafka.bootstrap-servers: "broker1:9092,broker2:9092"
+kafka.input-topic:        "input-topic"
+kafka.output-topic:       "output-topic"
+kafka.dlq-topic:          "dlq-topic"
+kafka.consumer-group:     "flink-json-flatten-cg"
+kafka.transaction-prefix: "flink-json-flatten"
+# transaction.timeout.ms must exceed (checkpoint.interval-ms + checkpoint.timeout-ms)
+kafka.transaction-timeout-ms: 900000
+
+# ── Job ───────────────────────────────────────────────────────────────────────
+# Set equal to the number of Kafka input-topic partitions for maximum throughput
+job.parallelism: 8
+
+# ── Checkpointing ─────────────────────────────────────────────────────────────
+checkpoint.interval-ms:  60000   # 60s
+checkpoint.timeout-ms:   120000  # 120s — must be < transaction-timeout-ms
+checkpoint.min-pause-ms: 30000   # prevent back-to-back checkpoints under load
+checkpoint.unaligned:    true    # reduces checkpoint latency under backpressure
+
+# Supported storage backends:
+#   file:///local/path          — for local / mini-cluster testing
+#   hdfs://namenode/path        — for HDFS
+#   s3://bucket/path            — for S3 (requires flink-s3-fs-hadoop plugin)
+checkpoint.storage: "s3://my-bucket/flink-checkpoints/json-flatten"
+
+# ── Processing ────────────────────────────────────────────────────────────────
+# Absolute path to the third-party JAR — must be readable from all TaskManagers.
+# Leave blank to use the built-in String.toUpperCase() fallback (dev/test mode).
+processing.third-party-jar:   "/opt/flink/lib/vendor-processor-1.0.0.jar"
+
+# Fully-qualified class in the vendor JAR with method: String process(String input)
+processing.processor-class:   "com.vendor.StringProcessor"
+
+# Comma-separated ordered priority list of dot-notation field keys to transform.
+# First key found in the FlatRow wins; remaining keys are skipped.
+processing.uppercase-field-keys: "person.name,name"
+
+# ── Flatten ───────────────────────────────────────────────────────────────────
+# Nesting depth and array size are unbounded — every level of the incoming
+# message is flattened as-is. Only genuine JSON parse failures go to the DLQ.
+
+# How to handle JSON null values in the flattened Row:
+#   INCLUDE            — null keys appear in Row with value null  (default)
+#   EXCLUDE            — null keys are omitted from Row entirely
+#   REPLACE_EMPTY_STRING — null values become ""
+flatten.null-handling: "INCLUDE"
