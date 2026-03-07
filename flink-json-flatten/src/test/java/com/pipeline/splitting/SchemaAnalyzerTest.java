@@ -349,4 +349,92 @@ class SchemaAnalyzerTest {
 
         assertThrows(IllegalArgumentException.class, () -> SchemaAnalyzer.analyze(schema));
     }
+
+    // ── loadSchema ────────────────────────────────────────────────────────────
+
+    @Test
+    void loadSchema_classpathResource_returnsJsonNode() throws Exception {
+        JsonNode node = SchemaAnalyzer.loadSchema("schemas/csv-person-flat.schema.json");
+        assertNotNull(node);
+        assertTrue(node.has("required"), "loaded schema must have 'required'");
+    }
+
+    @Test
+    void loadSchema_missingResource_throwsIllegalState() {
+        assertThrows(IllegalStateException.class,
+                () -> SchemaAnalyzer.loadSchema("schemas/does-not-exist.schema.json"));
+    }
+
+    // ── extractCsvColumns ─────────────────────────────────────────────────────
+
+    @Test
+    void extractCsvColumns_realSchema_returnsOrderedColumns() throws Exception {
+        JsonNode schema = SchemaAnalyzer.loadSchema("schemas/csv-person-flat.schema.json");
+        java.util.List<String> cols = SchemaAnalyzer.extractCsvColumns(schema);
+
+        assertEquals(java.util.List.of("firstName", "lastName", "age", "address.street"), cols);
+    }
+
+    @Test
+    void extractCsvColumns_orderMatchesRequiredArray() {
+        ObjectNode schema = MAPPER.createObjectNode();
+        ArrayNode  req    = schema.putArray("required");
+        req.add("z"); req.add("a"); req.add("m"); // intentional non-alphabetic order
+
+        java.util.List<String> cols = SchemaAnalyzer.extractCsvColumns(schema);
+        assertEquals(java.util.List.of("z", "a", "m"), cols, "column order must follow 'required' array");
+    }
+
+    @Test
+    void extractCsvColumns_missingRequired_throws() {
+        ObjectNode schema = MAPPER.createObjectNode();
+        schema.putObject("properties").put("x", "string");
+
+        assertThrows(IllegalArgumentException.class,
+                () -> SchemaAnalyzer.extractCsvColumns(schema));
+    }
+
+    @Test
+    void extractCsvColumns_emptyRequired_throws() {
+        ObjectNode schema = MAPPER.createObjectNode();
+        schema.putArray("required"); // empty array
+
+        assertThrows(IllegalArgumentException.class,
+                () -> SchemaAnalyzer.extractCsvColumns(schema));
+    }
+
+    @Test
+    void extractCsvColumns_propertyNotInRequired_throws() {
+        ObjectNode schema = MAPPER.createObjectNode();
+        schema.putArray("required").add("a");
+        schema.putObject("properties")
+                .put("a", "string")
+                .put("optionalField", "string"); // not in required
+
+        assertThrows(IllegalArgumentException.class,
+                () -> SchemaAnalyzer.extractCsvColumns(schema));
+    }
+
+    @Test
+    void extractCsvColumns_allPropertiesRequired_succeeds() {
+        ObjectNode schema = MAPPER.createObjectNode();
+        ArrayNode req = schema.putArray("required");
+        req.add("a"); req.add("b");
+        ObjectNode props = schema.putObject("properties");
+        props.putObject("a").put("type", "string");
+        props.putObject("b").put("type", "integer");
+
+        java.util.List<String> cols = SchemaAnalyzer.extractCsvColumns(schema);
+        assertEquals(java.util.List.of("a", "b"), cols);
+    }
+
+    @Test
+    void extractCsvColumns_noPropertiesBlock_allowedWithRequiredOnly() {
+        // properties is optional in JSON Schema — required alone is sufficient
+        ObjectNode schema = MAPPER.createObjectNode();
+        schema.putArray("required").add("col1").add("col2");
+
+        java.util.List<String> cols = SchemaAnalyzer.extractCsvColumns(schema);
+        assertEquals(java.util.List.of("col1", "col2"), cols);
+    }
 }

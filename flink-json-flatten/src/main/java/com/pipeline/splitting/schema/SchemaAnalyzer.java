@@ -1,11 +1,19 @@
 package com.pipeline.splitting.schema;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.pipeline.common.PaginationSchema;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
@@ -49,6 +57,76 @@ public final class SchemaAnalyzer {
     private static final String[] DEFINITION_KEYS = {"$defs", "definitions"};
 
     // ── Public API ────────────────────────────────────────────────────────────
+
+    /**
+     * Loads a JSON Schema from the classpath.
+     *
+     * @param classpathPath resource path, e.g. {@code "schemas/output-persons-paginated.schema.json"}
+     * @return parsed {@link JsonNode} root
+     * @throws IOException           if the resource cannot be read
+     * @throws IllegalStateException if the resource is not found on the classpath
+     */
+    public static JsonNode loadSchema(String classpathPath) throws IOException {
+        try (InputStream is = SchemaAnalyzer.class.getClassLoader()
+                .getResourceAsStream(classpathPath)) {
+            if (is == null) {
+                throw new IllegalStateException("Schema not found on classpath: " + classpathPath);
+            }
+            return new ObjectMapper().readTree(is);
+        }
+    }
+
+    /**
+     * Extracts the ordered list of CSV column names from a JSON Schema.
+     *
+     * <h2>Contract</h2>
+     * <ul>
+     *   <li>The schema <em>must</em> have a non-empty {@code "required"} array.
+     *       Column order in the CSV matches the order of entries in that array.</li>
+     *   <li>If a {@code "properties"} object is present, every key in it must also
+     *       appear in {@code "required"} — there are no optional CSV columns.</li>
+     *   <li>Column names may use dot-notation to reference flat
+     *       {@link org.apache.flink.types.Row} fields (e.g. {@code "address.street"}).</li>
+     * </ul>
+     *
+     * @param schemaRoot root {@link JsonNode} of the JSON Schema document
+     * @return immutable, ordered list of column names
+     * @throws IllegalArgumentException if the schema violates the CSV contract
+     */
+    public static List<String> extractCsvColumns(JsonNode schemaRoot) {
+        JsonNode required = schemaRoot.path("required");
+        if (!required.isArray() || required.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "CSV schema must have a non-empty 'required' array defining column order");
+        }
+
+        List<String> columns = new ArrayList<>(required.size());
+        for (JsonNode col : required) {
+            String name = col.asText();
+            if (name.isBlank()) {
+                throw new IllegalArgumentException(
+                        "CSV schema 'required' array contains a blank column name");
+            }
+            columns.add(name);
+        }
+
+        // Validate: every property must be required (no optional columns in CSV)
+        JsonNode properties = schemaRoot.path("properties");
+        if (properties.isObject()) {
+            Set<String> requiredSet = new HashSet<>(columns);
+            Iterator<String> propNames = properties.fieldNames();
+            while (propNames.hasNext()) {
+                String prop = propNames.next();
+                if (!requiredSet.contains(prop)) {
+                    throw new IllegalArgumentException(
+                            "CSV schema property '" + prop + "' is not listed in 'required'. "
+                            + "All CSV columns must be required.");
+                }
+            }
+        }
+
+        return Collections.unmodifiableList(columns);
+    }
 
     /**
      * Analyzes the supplied JSON Schema root and returns the extracted {@link PaginationSchema}.

@@ -1,7 +1,6 @@
 package com.pipeline;
 
 import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.pipeline.config.PipelineConfig;
 import com.pipeline.common.DlqRecord;
 import com.pipeline.common.ProcessedMessage;
@@ -28,7 +27,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
-import java.io.InputStream;
 import java.time.Duration;
 import java.util.Properties;
 
@@ -211,13 +209,7 @@ public final class JsonFlattenPipeline {
     }
 
     private static JsonNode loadSchema(String classpathPath) throws IOException {
-        try (InputStream is = JsonFlattenPipeline.class.getClassLoader()
-                .getResourceAsStream(classpathPath)) {
-            if (is == null) {
-                throw new IllegalStateException("Schema not found on classpath: " + classpathPath);
-            }
-            return new ObjectMapper().readTree(is);
-        }
+        return SchemaAnalyzer.loadSchema(classpathPath);
     }
 
     private static Properties baseProducerProps() {
