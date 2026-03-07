@@ -1,0 +1,25 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "PersonFlatCsv",
+  "description": "Flat CSV schema for a person record. The 'required' array defines both the complete set of columns and their order. All fields are mandatory — no optional columns exist in CSV.",
+  "type": "object",
+  "required": ["firstName", "lastName", "age", "address.street"],
+  "properties": {
+    "firstName": {
+      "type": "string",
+      "description": "The person's first name"
+    },
+    "lastName": {
+      "type": "string",
+      "description": "The person's last name"
+    },
+    "age": {
+      "type": "integer",
+      "description": "The person's age in years"
+    },
+    "address.street": {
+      "type": "string",
+      "description": "Street from the person's postal address (dot-notation flat field)"
+    }
+  }
+}
