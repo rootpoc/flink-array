@@ -8,53 +8,57 @@
 flowchart TD
     subgraph KAFKA_IN["Kafka Cluster (Source)"]
         KT1[("input-topic\npartitions: N")]
-        KT2[("dlq-topic\nparse failures")]
+        KT2[("dlq-topic\nparse / validation failures")]
     end
 
     subgraph KAFKA_OUT["Kafka Cluster (Sink)"]
-        KT3[("output-topic\npartitions: N")]
+        KT3[("output-topic (JSON)\npartitions: N")]
+        KT4[("output-topic (CSV)\noptional flat format")]
     end
 
     subgraph FLINK["Flink Job: JsonFlattenPipeline (parallelism=P)"]
         direction TB
 
         subgraph INGEST["Ingestion Layer"]
-            KC["FlinkKafkaConsumer\n─────────────────\n• KafkaSource (FLIP-27)\n• OffsetsInitializer.committed()\n• EXACTLY_ONCE isolation\n• Deserializer: RawBytesSchema"]
+            KC["KafkaEnvelopeDeserializer\n─────────────────\n• KafkaSource (FLIP-27)\n• OffsetsInitializer.committed()\n• EXACTLY_ONCE isolation\n• Captures key + value + headers\n• Emits ProcessedMessage(payload=null)"]
         end
 
-        subgraph FLATTEN["Flatten Layer"]
-            FD["FlatteningDeserializer\n(ProcessFunction)\n─────────────────\n• Jackson JsonNode parse\n• Recursive flatten()\n• Objects → parent.child\n• Arrays → parent.0.field\n• Builds FlatRow(String→Object)\n• Reuses ObjectMapper (ThreadLocal)\n• Emits FlatRow OR side-output DLQ"]
+        subgraph CORE["Core Layer (single operator, one JSON parse)"]
+            VSF["ValidateSplitFlattenFunction\n(ProcessFunction)\n─────────────────\n• Parse byte[] → JsonNode (once)\n• Validate required top-level fields\n• Validate required array item fields\n• Split array into pages of configurable size\n• Flatten each page → Row.withNames()\n  Objects → parent.child (dot-notation)\n  Arrays  → parent.0.field\n• Reuses ObjectMapper (ThreadLocal)\n• Emits ProcessedMessage(payload=Row)\n• OR side-output DLQ"]
             DLQ_SIDE["Side Output\n(DLQ Tag)"]
         end
 
         subgraph PROCESS["Processing Layer"]
-            RM["UpperCaseMapFunction\n(RichMapFunction<FlatRow,FlatRow>)\n─────────────────\n• open(): loads 3rd-party JAR\n  via URLClassLoader\n• map(): getField('name')\n  or getField('person.name')\n• toUpperCase()\n• setField(key, value)\n• Returns mutated FlatRow"]
+            RM["UpperCaseMapFunction\n(MapFunction<ProcessedMessage,ProcessedMessage>)\n─────────────────\n• open(): loads vendor JAR via URLClassLoader\n  binds MethodHandle for process(String)\n• map(): match field names against patterns\n  supports wildcard * per dot-segment\n• Applies processor to matching String fields\n• Returns ProcessedMessage with mutated Row"]
         end
 
         subgraph SERIALIZE["Serialize Layer"]
-            RS["ReconstructSerializer\n(KafkaRecordSerializationSchema)\n─────────────────\n• Iterates FlatRow entries\n• Split key on '.'\n• Detect numeric segment → array\n• Recursively builds ObjectNode\n• ArrayNode inserted by index\n• writeValueAsBytes()"]
+            RS["ReconstructSerializer\n(KafkaRecordSerializationSchema)\n─────────────────\n• Iterates Row.getFieldNames()\n• Sort keys (TreeMap) → parent before child\n• Split key on '.'\n• Detect numeric segment → ArrayNode\n• Recursively builds ObjectNode tree\n• writeValueAsBytes()\n• Propagates Kafka key + headers"]
+            CSV["CsvSerializer\n(KafkaRecordSerializationSchema)\n─────────────────\n• Schema loaded via SchemaAnalyzer\n  .loadSchema() + .extractCsvColumns()\n• required[] array = ordered column list\n• All columns mandatory (no optionals)\n• RFC 4180: quote fields containing , \" \\n\n• Propagates Kafka key + headers"]
         end
 
         subgraph CHECKPOINT["Fault Tolerance"]
-            CP["CheckpointingConfig\n─────────────────\n• Mode: EXACTLY_ONCE\n• Interval: 60s\n• Timeout: 120s\n• Min pause: 30s\n• Max concurrent: 1\n• Unaligned: true\n• Storage: FileSystemCheckpointStorage\n  (s3://bucket/flink-checkpoints)"]
+            CP["CheckpointingConfig\n─────────────────\n• Mode: EXACTLY_ONCE\n• Interval: 60s\n• Timeout: 120s\n• Min pause: 30s\n• Max concurrent: 1\n• Unaligned: true\n• Storage: FileSystemCheckpointStorage"]
         end
     end
 
-    KT1 -->|"bytes[]"| KC
-    KC -->|"byte[]"| FD
-    FD -->|"FlatRow"| RM
-    FD -->|"ParseException"| DLQ_SIDE
+    KT1 -->|"byte[] (Kafka record)"| KC
+    KC  -->|"ProcessedMessage(payload=null)"| VSF
+    VSF -->|"ProcessedMessage(payload=Row)"| RM
+    VSF -->|"DlqRecord"| DLQ_SIDE
     DLQ_SIDE -->|"original bytes + error"| KT2
-    RM -->|"FlatRow (mutated)"| RS
-    RS -->|"ProducerRecord<bytes>"| KT3
+    RM  -->|"ProcessedMessage (mutated Row)"| RS
+    RM  -->|"ProcessedMessage (mutated Row)"| CSV
+    RS  -->|"ProducerRecord<bytes> (JSON)"| KT3
+    CSV -->|"ProducerRecord<bytes> (CSV)"| KT4
     CP -.->|"barrier injection"| KC
-    CP -.->|"state snapshot"| RM
+    CP -.->|"state snapshot"| VSF
 
     style FLINK fill:#1a1a2e,stroke:#4a90d9,color:#fff
     style KAFKA_IN fill:#0d3b66,stroke:#4a90d9,color:#fff
     style KAFKA_OUT fill:#0d3b66,stroke:#4a90d9,color:#fff
     style INGEST fill:#16213e,stroke:#4a90d9,color:#fff
-    style FLATTEN fill:#16213e,stroke:#e94560,color:#fff
+    style CORE fill:#16213e,stroke:#e94560,color:#fff
     style PROCESS fill:#16213e,stroke:#f5a623,color:#fff
     style SERIALIZE fill:#16213e,stroke:#7ed321,color:#fff
     style CHECKPOINT fill:#16213e,stroke:#9b59b6,color:#fff
@@ -66,25 +70,25 @@ flowchart TD
 
 ```mermaid
 sequenceDiagram
-    participant K  as Kafka input-topic
-    participant FD as FlatteningDeserializer
-    participant FR as FlatRow (LinkedHashMap)
-    participant RM as RichMapFunction
-    participant RS as ReconstructSerializer
-    participant KO as Kafka output-topic
+    participant K   as Kafka input-topic
+    participant VSF as ValidateSplitFlattenFunction
+    participant ROW as Row.withNames()
+    participant RM  as UpperCaseMapFunction
+    participant RS  as ReconstructSerializer / CsvSerializer
+    participant KO  as Kafka output-topic
 
-    K->>FD: bytes (raw JSON)
-    Note over FD: ObjectMapper.readTree(bytes)<br/>flatten(root, "", map)<br/>Build FlatRow from map
+    K->>VSF: ProcessedMessage(payload=null, key, headers, originalBytes)
+    Note over VSF: 1. ObjectMapper.readTree(originalBytes)<br/>2. Validate required fields<br/>3. Split array → pages<br/>4. Flatten each page → Row.withNames()<br/>   "person.details.0.street" → "A"<br/>   "person.details.1.street" → "B"
 
-    FD->>FR: FlatRow{<br/>"person.details.0.street" → "A"<br/>"person.details.1.street" → "B"<br/>"person.name" → "alice"}
+    VSF->>ROW: Row.withNames(){<br/>"person.details.0.street"="A"<br/>"person.details.1.street"="B"<br/>"person.name"="alice"}
 
-    FR->>RM: FlatRow (pass-through reference)
-    Note over RM: getField("person.name") → "alice"<br/>thirdPartyLib.process(value)<br/>setField("person.name", "ALICE")
+    ROW->>RM: ProcessedMessage(payload=Row)
+    Note over RM: match("person.name", fieldName)<br/>methodHandle.invokeExact(value)<br/>row.setField("person.name","ALICE")
 
-    RM->>RS: FlatRow (mutated)
-    Note over RS: Sort keys, split on '.'<br/>Detect numeric → ArrayNode<br/>Merge into root ObjectNode<br/>writeValueAsBytes()
+    RM->>RS: ProcessedMessage (mutated Row)
+    Note over RS: JSON path: Sort keys (TreeMap)<br/>  split on '.', detect numeric → array<br/>  merge into root ObjectNode<br/>CSV path: columns from schema required[]<br/>  positional emit, RFC 4180 encoding
 
-    RS->>KO: bytes (reconstructed hierarchical JSON)
+    RS->>KO: ProducerRecord (JSON bytes or CSV bytes)
 ```
 
 ---
@@ -92,319 +96,408 @@ sequenceDiagram
 ## 3. Flattening Algorithm — Pseudocode
 
 ```
-ALGORITHM: flatten(JsonNode node, String prefix, Map<String,Object> out)
+ALGORITHM: flattenIterative(JsonNode root, Row out)
 ═══════════════════════════════════════════════════════════════════════════
 
-INPUT:  node   — current JsonNode (ObjectNode | ArrayNode | ValueNode)
-        prefix — accumulated dot-path (empty string at root)
-        out    — mutable output map (insertion-ordered LinkedHashMap)
+INPUT:  root — root JsonNode (ObjectNode | ArrayNode | ValueNode)
+        out  — Flink Row.withNames() (insertion-ordered LinkedHashMap internally)
 
-OUTPUT: out populated with dot-notation key → scalar value entries
+OUTPUT: out populated with dot-notation key → scalar value fields
+
+────────────────────────────────────────────────────────────────────────
+
+PROCEDURE flattenIterative(root, out):
+  stack ← new ArrayDeque<Object[]>
+  stack.push(["", root])
+
+  WHILE stack IS NOT EMPTY:
+    [prefix, node] ← stack.pop()
+
+    IF node IS ObjectNode THEN
+      children ← []
+      FOR EACH (key, child) IN node.fields():
+        childKey ← IF prefix IS EMPTY THEN key ELSE prefix + "." + key
+        children.add([childKey, child])
+      // Push in reverse to preserve document order on pop
+      FOR i FROM children.size()-1 DOWN TO 0:
+        stack.push(children[i])
+
+    ELSE IF node IS ArrayNode THEN
+      FOR i FROM node.size()-1 DOWN TO 0:
+        childKey ← prefix + "." + i
+        stack.push([childKey, node.get(i)])
+
+    ELSE  // leaf node
+      value ← extractLeafValue(node)
+      APPLY nullHandling policy
+      out.setField(prefix, value)
 
 ────────────────────────────────────────────────────────────────────────
 
-PROCEDURE flatten(node, prefix, out):
-
-  IF node IS ObjectNode THEN
-    FOR EACH fieldEntry IN node.fields():
-      childKey  ← IF prefix IS EMPTY
-                    THEN fieldEntry.key
-                    ELSE prefix + "." + fieldEntry.key
-      flatten(fieldEntry.value, childKey, out)    // recurse
-
-  ELSE IF node IS ArrayNode THEN
-    FOR index FROM 0 TO node.size() - 1:
-      childKey ← prefix + "." + index             // e.g. "items.0"
-      flatten(node.get(index), childKey, out)      // recurse
-
-  ELSE                                             // ValueNode (leaf)
-    value ← CASE node.nodeType OF
-               NUMBER  → node.numberValue()        // preserve Long/Double
-               BOOLEAN → node.booleanValue()
-               NULL    → null
-               DEFAULT → node.asText()
-    out.put(prefix, value)
-
-────────────────────────────────────────────────────────────────────────
+LEAF VALUE EXTRACTION:
+  integral number fitting int  → Integer
+  integral number fitting long → Long
+  floating point (BigDecimal)  → BigDecimal
+  floating point               → Double
+  boolean                      → Boolean
+  null / missing               → null
+  text                         → String
 
 EXAMPLE TRACE:
   Input: {"person":{"name":"alice","details":[{"street":"A"},{"street":"B"}]}}
 
-  flatten(ROOT, "", out)
-    → ObjectNode: iterate fields [person]
-      flatten(person_obj, "person", out)
-        → ObjectNode: iterate fields [name, details]
-          flatten("alice", "person.name", out)
-            → ValueNode → out["person.name"] = "alice"
-          flatten(details_arr, "person.details", out)
-            → ArrayNode: iterate [0, 1]
-              flatten({street:A}, "person.details.0", out)
-                → ObjectNode: iterate [street]
-                  flatten("A", "person.details.0.street", out)
-                    → ValueNode → out["person.details.0.street"] = "A"
-              flatten({street:B}, "person.details.1", out)
-                → flatten("B", "person.details.1.street", out)
-                    → ValueNode → out["person.details.1.street"] = "B"
-
-  RESULT MAP (ordered):
-    "person.name"             → "alice"
-    "person.details.0.street" → "A"
-    "person.details.1.street" → "B"
+  stack: [("", ROOT)]
+  pop ("", ROOT) → ObjectNode → push [("person", person_obj)]
+  pop ("person", person_obj) → ObjectNode → push [("person.name","alice"), ("person.details", arr)]
+  pop ("person.name","alice") → leaf → out["person.name"] = "alice"
+  pop ("person.details", arr) → ArrayNode → push [("person.details.1",{B}), ("person.details.0",{A})]
+  pop ("person.details.0",{A}) → ObjectNode → push [("person.details.0.street","A")]
+  pop ("person.details.0.street","A") → leaf → out["person.details.0.street"] = "A"
+  pop ("person.details.1",{B}) → ... → out["person.details.1.street"] = "B"
 ```
 
 ---
 
-## 4. Reconstruction Algorithm — Pseudocode
+## 4. CSV Serialization / Deserialization
 
 ```
-ALGORITHM: reconstruct(Map<String,Object> flatMap) → ObjectNode
+CSV SCHEMA CONTRACT
+═══════════════════
+A CSV schema is a standard JSON Schema where:
+  - "required" array defines ALL columns and their ORDER
+  - Every key in "properties" must appear in "required" (no optional columns)
+  - Column names may use dot-notation to reference flat Row fields
+
+Example:
+  {
+    "required": ["firstName", "lastName", "age", "address.street"],
+    "properties": {
+      "firstName":      { "type": "string"  },
+      "lastName":       { "type": "string"  },
+      "age":            { "type": "integer" },
+      "address.street": { "type": "string"  }
+    }
+  }
+
+SchemaAnalyzer.loadSchema(path) + SchemaAnalyzer.extractCsvColumns(schema)
+  → immutable List<String>  (the ordered column list)
+  Stored in the operator, serialized with job graph — no file I/O on workers.
+
+────────────────────────────────────────────────────────────────────────
+
+ALGORITHM: toCsvLine(Row row, List<String> columns)
+═══════════════════════════════════════════════════
+  FOR i IN 0..columns.size()-1:
+    IF i > 0: append ','
+    value ← row.getField(columns[i])   // null if absent
+    append encodeCsvField(value)
+
+encodeCsvField(value):
+  IF value IS null → ""
+  s ← value.toString()
+  IF s contains any of  , " \n \r:
+    RETURN '"' + s.replace('"', '""') + '"'
+  RETURN s
+
+────────────────────────────────────────────────────────────────────────
+
+ALGORITHM: parseCsvLine(String line) → List<String>
+═══════════════════════════════════════════════════
+  RFC 4180 iterative parser:
+  - Quoted field: strip outer quotes; "" inside → "
+  - Unquoted field: read until comma or end
+  - Trailing comma → empty final field
+  - No trimming of whitespace
+
+  Result mapped positionally: columns[i] → row.setField(columns[i], values[i])
+  Empty string → null in Row
+  Column count mismatch → DLQ ("dlq-csv")
+```
+
+---
+
+## 5. Reconstruction Algorithm — Pseudocode
+
+```
+ALGORITHM: reconstruct(Row row) → ObjectNode
 ═══════════════════════════════════════════════════════════════════════
 
-PROCEDURE reconstruct(flatMap):
-  root ← new ObjectNode
+PROCEDURE reconstruct(row):
+  root   ← new ObjectNode
+  sorted ← new TreeMap<String,Object>()   // lexicographic order
 
-  FOR EACH (dotKey, value) IN flatMap (SORTED lexicographically):
-    segments ← dotKey.split("\\.")         // ["person","details","0","street"]
+  FOR name IN row.getFieldNames():
+    sorted.put(name, row.getField(name))
+
+  FOR EACH (dotKey, value) IN sorted:
+    segments ← splitDotPath(dotKey)       // no regex, single scan
     setNested(root, segments, 0, value)
 
   RETURN root
 
 ────────────────────────────────────────────────────────────────────────
 
-PROCEDURE setNested(JsonNode current, String[] segs, int idx, Object value):
+PROCEDURE setNested(ObjectNode current, String[] segs, int idx, Object value):
 
-  seg     ← segs[idx]
-  isLast  ← (idx == segs.length - 1)
+  seg    ← segs[idx]
+  isLast ← (idx == segs.length - 1)
 
   IF isLast THEN
-    // current must be ObjectNode (guaranteed by sort order)
-    asObject(current).set(seg, toJsonNode(value))
+    current.set(seg, toJsonNode(value))
     RETURN
 
-  nextSeg    ← segs[idx + 1]
-  nextIsInt  ← nextSeg matches /^\d+$/     // numeric → next container is array
+  nextSeg   ← segs[idx + 1]
+  nextIsInt ← all chars of nextSeg are digits
 
   IF nextIsInt THEN
-    // ensure ArrayNode exists at seg
-    arr ← getOrCreateArray(asObject(current), seg)
-    idx ← parseInt(nextSeg)
-    WHILE arr.size() <= idx:
-      arr.addNull()                          // pad to required index
-    IF arr.get(idx) IS NullNode THEN
-      arr.set(idx, new ObjectNode())         // place object at array slot
-    setNested(arr.get(idx), segs, idx + 2, value)   // skip numeric seg
+    arr    ← getOrCreateArray(current, seg)
+    arrIdx ← parseInt(nextSeg)
+    WHILE arr.size() <= arrIdx:
+      arr.addNull()                        // pad gaps with null
+    IF idx + 2 == segs.length THEN
+      arr.set(arrIdx, toJsonNode(value))   // scalar array element
+    ELSE
+      IF arr.get(arrIdx) IS NullNode:
+        arr.set(arrIdx, new ObjectNode())
+      setNested(arr.get(arrIdx) AS ObjectNode, segs, idx+2, value)
   ELSE
-    child ← getOrCreateObject(asObject(current), seg)
-    setNested(child, segs, idx + 1, value)
+    child ← getOrCreateObject(current, seg)
+    setNested(child, segs, idx+1, value)
 
-────────────────────────────────────────────────────────────────────────
-
-NOTE: Lexicographic sort guarantees "person.details.0.*" always precedes
-      "person.details.1.*", so array slots are filled in order.
+NOTE: TreeMap lexicographic sort guarantees parent paths are visited
+      before children, and lower array indices before higher ones.
 ```
 
 ---
 
-## 5. Java Component Specifications
+## 6. Java Component Specifications
 
-### 5.1 FlatRow — Core Data Structure
+### 6.1 ProcessedMessage — Envelope
 
 ```
-CLASS: FlatRow implements Serializable
-═══════════════════════════════════════
+CLASS: ProcessedMessage implements Serializable
+═══════════════════════════════════════════════
 FIELDS:
-  LinkedHashMap<String, Object> fields   // preserves insertion order
-  String sourcePartition                  // for DLQ correlation
-  long   sourceOffset
+  byte[]              kafkaKey        // original Kafka record key (nullable)
+  byte[]              originalBytes   // raw Kafka value — preserved for DLQ
+  Map<String,byte[]>  headers         // unmodifiable Kafka headers map
+  Row                 payload         // null at source; set by ValidateSplitFlatten
 
-METHODS:
-  Object  getField(String dotKey)
-  void    setField(String dotKey, Object value)
-  Set<Map.Entry<String,Object>> entries()
-  FlatRow copy()                          // shallow clone for safety
+FACTORY:
+  static ofValue(byte[] value)        // test helper: no key, no headers, null payload
+  static ofPayload(Row payload)       // test helper: no key, no headers
 
-RATIONALE: Using Map<String,Object> instead of Flink Row<N> because:
-  • Row arity is fixed at compile time; flat field count varies per message
-  • GenericRowData requires RowType known upfront
-  • Map allows O(1) named access without index bookkeeping
-  • Serialization: custom TypeSerializer<FlatRow> for checkpoint state
+MUTATION:
+  ProcessedMessage withPayload(Row)   // returns new instance, preserves metadata
 ```
 
-### 5.2 FlatteningDeserializer
+### 6.2 ValidateSplitFlattenFunction
 
 ```
-CLASS: FlatteningDeserializer
-  extends ProcessFunction<byte[], FlatRow>
-  implements ResultTypeQueryable<FlatRow>
-═══════════════════════════════════════════
+CLASS: ValidateSplitFlattenFunction
+  extends ProcessFunction<ProcessedMessage, ProcessedMessage>
+  implements ResultTypeQueryable<ProcessedMessage>
+═══════════════════════════════════════════════════════════════
 FIELDS:
-  static final OutputTag<DlqRecord> DLQ_TAG = new OutputTag<>("dlq"){}
-  ThreadLocal<ObjectMapper> mapperLocal      // reuse, zero GC pressure
-  transient ObjectMapper mapper
+  InputSchemaInfo  inputSchema        // required fields extracted from schema
+  PaginationSchema outputSchema       // pagination field names
+  int              pageSize
+  NullHandling     nullHandling
+  static OutputTag<DlqRecord> DLQ_TAG = new OutputTag<>("dlq-validate-split-flatten"){}
+  transient ThreadLocal<ObjectMapper> mapperLocal
 
-open():
-  mapper = mapperLocal.get()                 // initialize per-thread
+processElement(ProcessedMessage msg, ctx, out):
+  TRY:
+    root ← mapper.readTree(msg.originalBytes)     // parse ONCE
+    validate top-level required fields            → DLQ on failure
+    validate array item required fields           → DLQ on failure
+    FOR each page p IN 0..totalPages-1:
+      row ← Row.withNames()
+      write pagination metadata fields
+      flatten array slice directly into row       // iterative, no recursion
+      out.collect(msg.withPayload(row))
+  CATCH:
+    ctx.output(DLQ_TAG, DlqRecord.of(msg, e))
+```
+
+### 6.3 SchemaAnalyzer — Shared Schema Utility
+
+```
+CLASS: SchemaAnalyzer (pure static)
+════════════════════════════════════
+
+// File loading
+loadSchema(String classpathPath) → JsonNode
+  Uses ClassLoader.getResourceAsStream()
+  Throws IllegalStateException if not found on classpath
+
+// Pagination schema analysis
+analyze(JsonNode schemaRoot) → PaginationSchema
+  Traverses properties, allOf/anyOf/oneOf, if/then/else, $defs/$ref
+  Applies role-detection heuristics for array/index/total/count fields
+  Throws IllegalArgumentException if any role cannot be uniquely identified
+
+// CSV column extraction
+extractCsvColumns(JsonNode schemaRoot) → List<String>  (immutable)
+  Reads "required" array for ordered column list
+  Validates all "properties" keys appear in "required"
+  Throws IllegalArgumentException on contract violation
+```
+
+### 6.4 CsvSerializer
+
+```
+CLASS: CsvSerializer
+  implements KafkaRecordSerializationSchema<ProcessedMessage>
+  implements Serializable
+════════════════════════════════════════════════════════════
+FIELDS:
+  String       outputTopic
+  List<String> columns    // immutable; loaded at construction; serialized with graph
+
+CONSTRUCTOR(outputTopic, schemaPath):
+  columns ← SchemaAnalyzer.extractCsvColumns(SchemaAnalyzer.loadSchema(schemaPath))
+
+serialize(ProcessedMessage msg, ctx, timestamp):
+  csvBytes ← toCsvLine(msg.getPayload()).getBytes(UTF_8)
+  propagate msg.kafkaKey + msg.headers → ProducerRecord
+  RETURN new ProducerRecord<>(outputTopic, ..., csvBytes)
+```
+
+### 6.5 CsvDeserializer
+
+```
+CLASS: CsvDeserializer
+  extends ProcessFunction<byte[], Row>
+  implements ResultTypeQueryable<Row>
+════════════════════════════════════════════════════════════
+FIELDS:
+  List<String> columns    // immutable; loaded at construction; serialized with graph
+  static OutputTag<DlqRecord> DLQ_TAG = new OutputTag<>("dlq-csv"){}
+
+CONSTRUCTOR(schemaPath):
+  columns ← SchemaAnalyzer.extractCsvColumns(SchemaAnalyzer.loadSchema(schemaPath))
 
 processElement(byte[] bytes, ctx, out):
+  IF empty/null → DLQ
   TRY:
-    root    ← mapper.readTree(bytes)
-    flatMap ← new LinkedHashMap<>()
-    flatten(root, "", flatMap)               // recursive algorithm above
-    row     ← new FlatRow(flatMap)
+    line   ← new String(bytes, UTF_8)
+    values ← parseCsvLine(line)              // RFC 4180
+    IF values.size() != columns.size() → throw
+    row ← Row.withNames()
+    FOR i: row.setField(columns[i], values[i].isEmpty() ? null : values[i])
     out.collect(row)
-  CATCH (Exception e):
-    dlq ← DlqRecord(bytes, e.getMessage(), System.currentTimeMillis())
-    ctx.output(DLQ_TAG, dlq)                 // side output, no job failure
-
-getProducedType():
-  RETURN TypeInformation.of(FlatRow.class)   // custom TypeInfo
+  CATCH: ctx.output(DLQ_TAG, DlqRecord.of(bytes, e))
 ```
 
-### 5.3 UpperCaseMapFunction (RichMapFunction)
+### 6.6 UpperCaseMapFunction
 
 ```
-CLASS: UpperCaseMapFunction extends RichMapFunction<FlatRow, FlatRow>
-══════════════════════════════════════════════════════════════════════
+CLASS: UpperCaseMapFunction extends RichMapFunction<ProcessedMessage, ProcessedMessage>
+══════════════════════════════════════════════════════════════════════════════════════
 FIELDS:
-  String jarPath          // configuration parameter
-  transient Object thirdPartyProcessor    // loaded via URLClassLoader
-  transient Method processMethod
+  String       jarPath
+  List<String> fieldPatterns       // wildcard patterns, e.g. "search_engines.*.imdb.director"
+  transient MethodHandle processHandle  // loaded once per subtask, ~10x faster than invoke()
 
 open(Configuration cfg):
-  url    ← new File(jarPath).toURI().toURL()
-  loader ← new URLClassLoader([url], getClass().getClassLoader())
-  clazz  ← loader.loadClass("com.vendor.StringProcessor")
-  thirdPartyProcessor ← clazz.getDeclaredConstructor().newInstance()
-  processMethod ← clazz.getMethod("process", String.class)
+  IF jarPath blank: use String::toUpperCase fallback
+  ELSE:
+    loader ← new URLClassLoader([jarPath], classLoader)
+    clazz  ← loader.loadClass(processorClass)
+    handle ← MethodHandles.lookup().findVirtual(clazz, "process", ...)
+    processHandle ← handle.bindTo(clazz.newInstance())
 
-map(FlatRow row):
-  // Try canonical key first, fall back to top-level "name"
-  key   ← row.hasField("person.name") ? "person.name" : "name"
-  value ← row.getField(key)
-  IF value != null AND value instanceof String:
-    processed ← (String) processMethod.invoke(thirdPartyProcessor, value)
-    row.setField(key, processed)
-  RETURN row                                 // mutate in place (no copy needed)
-
-PARALLELISM NOTE: One URLClassLoader per task slot (open() per subtask).
-                  Method.invoke() is reflective — consider MethodHandle
-                  for hot paths (10x faster after JIT warm-up).
+map(ProcessedMessage msg):
+  row ← msg.getPayload()
+  FOR field IN row.getFieldNames():
+    IF any pattern matches(field) AND row.getField(field) instanceof String:
+      row.setField(field, processHandle.invoke(value))
+  RETURN msg.withPayload(row)
 ```
 
-### 5.4 ReconstructSerializer
+### 6.7 ReconstructSerializer
 
 ```
 CLASS: ReconstructSerializer
-  implements KafkaRecordSerializationSchema<FlatRow>
-════════════════════════════════════════════════════
+  implements KafkaRecordSerializationSchema<ProcessedMessage>
+════════════════════════════════════════════════════════════
 FIELDS:
   String outputTopic
-  ThreadLocal<ObjectMapper> mapperLocal
+  transient ThreadLocal<ObjectMapper> mapperLocal
 
-serialize(FlatRow row, KafkaSinkContext ctx, Long timestamp):
-  mapper   ← mapperLocal.get()
-  root     ← mapper.createObjectNode()
-
-  // Sort ensures parent nodes created before children
-  sorted   ← new TreeMap<>(row.fields)
-
+serialize(ProcessedMessage msg, ctx, timestamp):
+  mapper ← mapperLocal.get()
+  root   ← mapper.createObjectNode()
+  sorted ← new TreeMap<>(row.getFieldNames())
   FOR (key, value) IN sorted:
-    segs ← key.split("\\.", -1)             // -1 preserves trailing dots
-    setNested(root, segs, 0, value, mapper)
-
+    setNested(root, splitDotPath(key), 0, value, mapper)
   bytes ← mapper.writeValueAsBytes(root)
-  RETURN new ProducerRecord<>(outputTopic, null, timestamp, null, bytes)
+  propagate msg.kafkaKey + msg.headers → ProducerRecord
+  RETURN new ProducerRecord<>(outputTopic, ..., bytes)
+```
+
+### 6.8 FlatRowSerializer — Custom TypeSerializer
+
+```
+CLASS: FlatRowSerializer extends TypeSerializer<Row>
+════════════════════════════════════════════════════
+Wire format per record:
+  [rowKind: byte] [fieldCount: int]
+  FOR each field:
+    [name: UTF] [tag: byte] [value: typed]
+
+Type tags:
+  0 = null
+  1 = String  (UTF)
+  2 = Integer (int)
+  3 = Long    (long)
+  4 = Double  (double)
+  5 = Float   (float)
+  6 = Boolean (byte)
+  7 = BigDecimal (UTF plain string)
+
+CRITICAL: Avoids Kryo fallback. Integer values survive as Integer;
+          Long values survive as Long (no promotion).
 ```
 
 ---
 
-## 6. Pipeline Assembly (Main Job)
+## 7. Pipeline Assembly
 
 ```
-PROCEDURE buildJob(StreamExecutionEnvironment env):
+PROCEDURE buildPipeline(env, config):
 
-  // ── Checkpoint Configuration ──────────────────────────────────────
-  env.enableCheckpointing(60_000)
-  cfg ← env.getCheckpointConfig()
-  cfg.setCheckpointingMode(EXACTLY_ONCE)
-  cfg.setCheckpointTimeout(120_000)
-  cfg.setMinPauseBetweenCheckpoints(30_000)
-  cfg.setMaxConcurrentCheckpoints(1)
-  cfg.enableUnalignedCheckpoints()           // reduces barrier latency
-  cfg.setExternalizedCheckpointCleanup(RETAIN_ON_CANCELLATION)
-  cfg.setCheckpointStorage("s3://bucket/checkpoints/json-flatten")
+  // ── Schema Loading ────────────────────────────────────────────────
+  inputSchema  ← InputSchemaInfo.analyze(
+                   SchemaAnalyzer.loadSchema("schemas/input-netflix-categories.schema.json"))
+  outputSchema ← SchemaAnalyzer.analyze(
+                   SchemaAnalyzer.loadSchema("schemas/output-persons-paginated.schema.json"))
 
   // ── Kafka Source ──────────────────────────────────────────────────
-  source ← KafkaSource.<byte[]>builder()
-    .setBootstrapServers(brokers)
-    .setTopics("input-topic")
-    .setGroupId("flink-json-flatten-cg")
-    .setStartingOffsets(OffsetsInitializer.committedOffsets(EARLIEST))
-    .setDeserializer(new RawByteDeserializationSchema())
+  source ← KafkaSource.<ProcessedMessage>builder()
+    .setDeserializer(new KafkaEnvelopeDeserializer())
     .setProperty("isolation.level", "read_committed")    // EOS
-    .setProperty("max.poll.records", "500")
     .build()
 
-  rawStream ← env.fromSource(source, WatermarkStrategy.noWatermarks(), "kafka-source")
-               .setParallelism(P)
+  rawStream ← env.fromSource(source, noWatermarks, "kafka-source")
 
-  // ── Flatten ───────────────────────────────────────────────────────
-  flatProcess ← rawStream.process(new FlatteningDeserializer())
-                          .name("flatten-deserialize")
-                          .setParallelism(P)
+  // ── Validate + Split + Flatten (single parse) ─────────────────────
+  flatStream ← rawStream.process(
+    new ValidateSplitFlattenFunction(inputSchema, outputSchema, pageSize, nullHandling))
 
   // ── DLQ Side Output ───────────────────────────────────────────────
-  dlqStream   ← flatProcess.getSideOutput(FlatteningDeserializer.DLQ_TAG)
-  dlqSink     ← buildKafkaSink("dlq-topic", new DlqSerializationSchema())
-  dlqStream.sinkTo(dlqSink).name("dlq-sink").setParallelism(P)
+  flatStream.getSideOutput(ValidateSplitFlattenFunction.DLQ_TAG)
+    .sinkTo(KafkaSink(dlqTopic, DlqSerializationSchema))
 
-  // ── RichMap Processing ────────────────────────────────────────────
-  processedStream ← flatProcess
-    .map(new UpperCaseMapFunction(jarPath))
-    .name("uppercase-map")
-    .setParallelism(P)
+  // ── String Processing ─────────────────────────────────────────────
+  processedStream ← flatStream.map(new UpperCaseMapFunction(config))
 
-  // ── Kafka Sink (EOS) ──────────────────────────────────────────────
-  sink ← KafkaSink.<FlatRow>builder()
-    .setBootstrapServers(brokers)
-    .setRecordSerializer(new ReconstructSerializer("output-topic"))
-    .setDeliveryGuarantee(DeliveryGuarantee.EXACTLY_ONCE)
-    .setTransactionalIdPrefix("flink-json-flatten")
-    .setProperty("transaction.timeout.ms", "900000")     // > checkpoint interval
-    .build()
+  // ── JSON Output (EXACTLY_ONCE) ────────────────────────────────────
+  processedStream.sinkTo(KafkaSink(outputTopic, ReconstructSerializer, EXACTLY_ONCE))
 
-  processedStream.sinkTo(sink).name("kafka-sink").setParallelism(P)
-
-  env.execute("JsonFlattenPipeline")
-```
-
----
-
-## 7. Custom FlatRow TypeSerializer (Checkpoint Safety)
-
-```
-CLASS: FlatRowSerializer extends TypeSerializer<FlatRow>
-════════════════════════════════════════════════════════
-serialize(FlatRow row, DataOutputView out):
-  out.writeInt(row.fields.size())
-  FOR (key, value) IN row.fields:
-    out.writeUTF(key)
-    WRITE type tag (1=String, 2=Long, 3=Double, 4=Boolean, 5=null)
-    WRITE value accordingly
-
-deserialize(DataInputView in):
-  size ← in.readInt()
-  map  ← new LinkedHashMap<>(size)
-  FOR i IN 0..size:
-    key  ← in.readUTF()
-    tag  ← in.readByte()
-    val  ← READ by tag
-    map.put(key, val)
-  RETURN new FlatRow(map)
-
-CRITICAL: Must be registered with ExecutionConfig to avoid Kryo fallback:
-  env.getConfig().registerTypeWithKryoSerializer(FlatRow.class, ...)
-  // OR implement TypeSerializerSnapshot for schema evolution
+  // ── CSV Output (optional alternative) ────────────────────────────
+  // processedStream.sinkTo(KafkaSink(csvTopic, CsvSerializer, EXACTLY_ONCE))
 ```
 
 ---
@@ -416,27 +509,26 @@ CRITICAL: Must be registered with ExecutionConfig to avoid Kryo fallback:
 │ Bottleneck                  │ Root Cause                    │ Mitigation                           │
 ├─────────────────────────────┼───────────────────────────────┼──────────────────────────────────────┤
 │ Deep nesting (>10 levels)   │ O(depth) recursion stack      │ Iterative flatten with explicit       │
-│                             │ large maps, GC pressure        │ Deque<(node,prefix)>; pre-size map   │
+│                             │ large maps, GC pressure        │ Deque<(node,prefix)> — implemented   │
 ├─────────────────────────────┼───────────────────────────────┼──────────────────────────────────────┤
-│ Large arrays (>1000 items)  │ N entries per array element   │ Cap array index depth in config;     │
-│                             │ in FlatRow map (memory)       │ route oversized to DLQ; stream split │
+│ Large arrays (>1000 items)  │ N entries per array element   │ Configurable pageSize splits large    │
+│                             │ in Row fields (memory)        │ arrays; each page is bounded          │
 ├─────────────────────────────┼───────────────────────────────┼──────────────────────────────────────┤
-│ String.split() in hot path  │ Called per key in serialize   │ Pre-split and cache in FlatRow;      │
-│                             │ (regex compilation)           │ use StringUtils.split (no regex)     │
+│ splitDotPath() in hot path  │ Called per key in serialize   │ Custom scan (no regex); single pass  │
+│                             │ (string allocation)           │ counting + splitting                  │
 ├─────────────────────────────┼───────────────────────────────┼──────────────────────────────────────┤
 │ ObjectMapper allocation     │ Per-record JSON parse         │ ThreadLocal<ObjectMapper> — done.    │
-│                             │                               │ Also reuse JsonFactory directly      │
 ├─────────────────────────────┼───────────────────────────────┼──────────────────────────────────────┤
-│ Reflective Method.invoke()  │ Per-record in RichMap         │ Convert to MethodHandle.invoke()     │
-│                             │ (slower than direct call)     │ after first resolve; ~10x faster     │
+│ Reflective Method.invoke()  │ Per-record in map function    │ MethodHandle.bindTo() resolved once; │
+│                             │                               │ ~10x faster after JIT warm-up        │
 ├─────────────────────────────┼───────────────────────────────┼──────────────────────────────────────┤
 │ EOS transaction overhead    │ Kafka 2PC per checkpoint      │ Tune checkpoint interval ≥60s;       │
 │                             │ adds latency spikes            │ use unaligned checkpoints            │
 ├─────────────────────────────┼───────────────────────────────┼──────────────────────────────────────┤
-│ Skewed partitions           │ Hot keys in Kafka topic       │ Add rebalance().before flatten;      │
+│ Skewed partitions           │ Hot keys in Kafka topic       │ Add rebalance() before core operator │
 │                             │ → uneven subtask load         │ or keyBy(hash(offset % P))           │
 ├─────────────────────────────┼───────────────────────────────┼──────────────────────────────────────┤
-│ Checkpoint state size       │ FlatRow maps accumulate       │ Operator is stateless (no keyed      │
+│ Checkpoint state size       │ Row maps accumulate           │ Operator is stateless (no keyed      │
 │                             │ in buffer during barrier       │ state); checkpoint only Kafka offset │
 └─────────────────────────────┴───────────────────────────────┴──────────────────────────────────────┘
 ```
@@ -446,9 +538,7 @@ CRITICAL: Must be registered with ExecutionConfig to avoid Kryo fallback:
 ## 9. Configuration Reference
 
 ```yaml
-# flink-job.yaml
 job:
-  name: JsonFlattenPipeline
   parallelism: 8                        # = Kafka partition count
 
 kafka:
@@ -457,8 +547,6 @@ kafka:
   output-topic: output-topic
   dlq-topic: dlq-topic
   consumer-group: flink-json-flatten-cg
-  transaction-prefix: flink-json-flatten
-  transaction-timeout-ms: 900000
 
 checkpoint:
   interval-ms: 60000
@@ -469,27 +557,31 @@ checkpoint:
 
 processing:
   third-party-jar: /opt/flink/lib/vendor-processor-1.0.0.jar
-  uppercase-field-keys:                 # ordered priority list
-    - "person.name"
-    - "name"
+  processor-class: com.vendor.StringProcessor
+  uppercase-field-keys: "search_engines.*.imdb.director,person.name"
+
+splitting:
+  page-size: 100
 
 flatten:
-  max-depth: 20                         # guard against infinite recursion
-  max-array-index: 999                  # route larger arrays to DLQ
-  null-handling: INCLUDE                # INCLUDE | EXCLUDE | REPLACE_EMPTY
+  null-handling: INCLUDE                # INCLUDE | EXCLUDE | REPLACE_EMPTY_STRING
 ```
 
 ---
 
-## 10. Key Design Decisions Summary
+## 10. Key Design Decisions
 
 | Decision | Choice | Rationale |
 |---|---|---|
-| Row representation | `LinkedHashMap<String,Object>` | Dynamic arity; named field access; no fixed schema |
+| `Row.withNames()` | Named-field dynamic Row | Schema-agnostic; field count varies per message; O(1) named access |
+| `ProcessedMessage` envelope | Immutable wrapper with `withPayload()` | Preserves Kafka key + headers through all operators without mutation |
+| Single merged operator | `ValidateSplitFlattenFunction` | Eliminates byte[] round-trip between validate/split/flatten; one JSON parse |
+| `SchemaAnalyzer` as shared utility | All schema loading through one class | `loadSchema` + `analyze` + `extractCsvColumns` colocated; no duplication |
+| CSV column order from `required` | Standard JSON Schema `required` array | Already ordered; no custom extension needed; same format as JSON schemas |
+| Column list serialized with operator | `List<String>` field | No file I/O at worker start-up; survives operator serialization |
 | ObjectMapper lifecycle | `ThreadLocal` | Zero allocation per record; thread-safe |
-| Array detection | Numeric segment check `/^\d+$/` | Unambiguous; no schema metadata needed |
-| DLQ mechanism | Flink Side Output | No job failure; same parallelism; no extra hop |
-| EOS boundary | Kafka `read_committed` + `DeliveryGuarantee.EXACTLY_ONCE` | Full end-to-end guarantee across both topics |
-| Third-party JAR loading | `URLClassLoader` in `open()` | Isolated per task; no classpath pollution |
-| Checkpoint storage | S3 + incremental | Operator is stateless; only offset state checkpointed |
-| Sort before reconstruct | `TreeMap` (lexicographic) | Guarantees parent path exists before child insert |
+| Array detection | Numeric segment check (no regex) | Unambiguous; no schema metadata needed; custom scan avoids regex overhead |
+| DLQ mechanism | Flink Side Output | No job failure; same parallelism; no extra network hop |
+| EOS boundary | Kafka `read_committed` + `EXACTLY_ONCE` | Full end-to-end guarantee across both topics |
+| `MethodHandle` for vendor processor | Bound once per subtask in `open()` | ~10× faster than `Method.invoke()` after JIT warm-up |
+| Sort before reconstruct | `TreeMap` (lexicographic) | Guarantees parent path exists before child insert; index 0 before index 1 |

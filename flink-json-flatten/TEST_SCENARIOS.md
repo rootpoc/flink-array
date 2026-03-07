@@ -9,7 +9,7 @@ mvn test
 
 Run a single test class:
 ```bash
-mvn test -Dtest="UpperCaseMapFunctionTest"
+mvn test -Dtest="CsvSerializerTest"
 ```
 
 ---
@@ -19,6 +19,8 @@ mvn test -Dtest="UpperCaseMapFunctionTest"
 **Package:** `com.pipeline.splitting`
 **File:** `splitting/SchemaAnalyzerTest.java`
 **Type:** Pure unit tests — Jackson only, no Flink dependency
+
+### `analyze()` — pagination schema extraction
 
 | # | Test | Verifies |
 |---|------|---------|
@@ -40,6 +42,25 @@ mvn test -Dtest="UpperCaseMapFunctionTest"
 | 16 | `analyze_throwsIfNoArrayField` | Schema with only an integer property → `IllegalArgumentException` |
 | 17 | `analyze_throwsIfNoPropertiesAnywhere` | Completely empty schema → `IllegalArgumentException` |
 | 18 | `analyze_throwsIfAmbiguousIndexField` | Two integer fields both matching the index heuristic → `IllegalArgumentException` |
+
+### `loadSchema()` — classpath schema loading
+
+| # | Test | Verifies |
+|---|------|---------|
+| 19 | `loadSchema_classpathResource_returnsJsonNode` | `csv-person-flat.schema.json` loads successfully and has a `"required"` node |
+| 20 | `loadSchema_missingResource_throwsIllegalState` | Non-existent classpath resource → `IllegalStateException` |
+
+### `extractCsvColumns()` — CSV column extraction
+
+| # | Test | Verifies |
+|---|------|---------|
+| 21 | `extractCsvColumns_realSchema_returnsOrderedColumns` | Real `csv-person-flat.schema.json` → `["firstName","lastName","age","address.street"]` |
+| 22 | `extractCsvColumns_orderMatchesRequiredArray` | `required: ["z","a","m"]` → columns in that exact order (not alphabetical) |
+| 23 | `extractCsvColumns_missingRequired_throws` | Schema with `properties` but no `required` → `IllegalArgumentException` |
+| 24 | `extractCsvColumns_emptyRequired_throws` | Schema with empty `required` array → `IllegalArgumentException` |
+| 25 | `extractCsvColumns_propertyNotInRequired_throws` | `properties` contains a key absent from `required` → `IllegalArgumentException` |
+| 26 | `extractCsvColumns_allPropertiesRequired_succeeds` | All properties listed in `required` — no exception |
+| 27 | `extractCsvColumns_noPropertiesBlock_allowedWithRequiredOnly` | `required` alone (no `properties`) is valid — returns ordered column list |
 
 ---
 
@@ -125,8 +146,8 @@ mvn test -Dtest="UpperCaseMapFunctionTest"
 
 ## 5. FlatteningDeserializerTest
 
-**Package:** `com.pipeline.serialization`
-**File:** `serialization/FlatteningDeserializerTest.java`
+**Package:** `com.pipeline.deserialization`
+**File:** `deserialization/FlatteningDeserializerTest.java`
 **Type:** Flink integration tests — `OneInputStreamOperatorTestHarness`
 
 Tests verify:
@@ -138,7 +159,65 @@ Tests verify:
 
 ---
 
-## 6. FlatRowSerializerTest
+## 6. CsvDeserializerTest
+
+**Package:** `com.pipeline.deserialization`
+**File:** `deserialization/CsvDeserializerTest.java`
+**Type:** Flink integration tests — `OneInputStreamOperatorTestHarness`
+
+### Schema loading
+
+| # | Test | Verifies |
+|---|------|---------|
+| 1 | `schemaLoaded_columnsMatchRequired` | Columns loaded from `csv-person-flat.schema.json` match `["firstName","lastName","age","address.street"]` |
+
+### Happy-path parsing
+
+| # | Test | Verifies |
+|---|------|---------|
+| 2 | `validCsvLine_fieldsSetOnRow` | All four fields mapped to correct Row field names by position |
+| 3 | `emptyValueInLine_storedAsNull` | Empty CSV value (consecutive commas) → `null` in Row |
+| 4 | `quotedField_decodedCorrectly` | Quoted field containing a comma decoded without the quotes |
+| 5 | `quotedFieldWithEscapedQuote_decodedCorrectly` | `""` inside a quoted field decoded as a single `"` |
+
+### Column count mismatch → no output
+
+| # | Test | Verifies |
+|---|------|---------|
+| 6 | `tooFewColumns_noOutput` | 3 values for a 4-column schema → empty main output |
+| 7 | `tooManyColumns_noOutput` | 5 values for a 4-column schema → empty main output |
+
+### Empty input → no output
+
+| # | Test | Verifies |
+|---|------|---------|
+| 8 | `emptyBytes_noOutput` | Zero-length input → empty main output |
+
+### `parseCsvLine` static helper
+
+| # | Test | Verifies |
+|---|------|---------|
+| 9 | `parseCsvLine_simpleFields` | `"a,b,c"` → `["a","b","c"]` |
+| 10 | `parseCsvLine_singleField` | `"hello"` → `["hello"]` |
+| 11 | `parseCsvLine_emptyString_singleEmptyField` | `""` → `[""]` |
+| 12 | `parseCsvLine_trailingComma_addsEmptyField` | `"a,b,"` → `["a","b",""]` |
+| 13 | `parseCsvLine_consecutiveCommas_emptyMiddleField` | `"a,,b"` → `["a","","b"]` |
+| 14 | `parseCsvLine_quotedFieldWithComma` | `"\"a,b\",c"` → `["a,b","c"]` |
+| 15 | `parseCsvLine_quotedFieldWithEscapedQuote` | `"\"a\"\"b\",c"` → `["a\"b","c"]` |
+| 16 | `parseCsvLine_quotedEmptyField` | `"a,\"\",b"` → `["a","","b"]` |
+| 17 | `parseCsvLine_allQuoted` | All three fields quoted → stripped correctly |
+| 18 | `parseCsvLine_fieldWithNewline_preservedInsideQuotes` | Embedded `\n` inside quotes preserved as-is |
+
+### Round-trip with CsvSerializer
+
+| # | Test | Verifies |
+|---|------|---------|
+| 19 | `roundTrip_serializeThenDeserialize` | Serialize → CSV line → deserialize → Row fields equal originals |
+| 20 | `roundTrip_fieldWithComma` | lastName containing a comma survives encode → decode unchanged |
+
+---
+
+## 7. FlatRowSerializerTest
 
 **Package:** `com.pipeline.serialization`
 **File:** `serialization/FlatRowSerializerTest.java`
@@ -149,11 +228,11 @@ Tests verify round-trip serialization/deserialization of `Row` objects through `
 - Multiple fields per row
 - Field names with dot notation
 
-**Note:** `Integer` values written to a `Row` round-trip as `Long` through `FlatRowSerializer` (wire format uses tag 2=Integer vs 3=Long, but Jackson's JSON integer parsing promotes to Long).
+**Note:** `Integer` values written to a `Row` round-trip as `Long` through `FlatRowSerializer`.
 
 ---
 
-## 7. ReconstructSerializerTest
+## 8. ReconstructSerializerTest
 
 **Package:** `com.pipeline.serialization`
 **File:** `serialization/ReconstructSerializerTest.java`
@@ -163,19 +242,74 @@ Tests verify `Row → JSON bytes` reconstruction:
 - Flat fields reconstruct to flat JSON
 - Dot-notation keys reconstruct nested objects
 - Numeric dot segments reconstruct JSON arrays
+- Array gap-filling with null padding
 - Mixed nested + array paths
 
 ---
 
-## 8. NetflixCategoriesTest
+## 9. CsvSerializerTest
+
+**Package:** `com.pipeline.serialization`
+**File:** `serialization/CsvSerializerTest.java`
+**Type:** Pure unit tests
+
+### Schema loading
+
+| # | Test | Verifies |
+|---|------|---------|
+| 1 | `schemaLoaded_columnsMatchRequired` | Columns from `csv-person-flat.schema.json` match `["firstName","lastName","age","address.street"]` |
+
+### Happy-path CSV line
+
+| # | Test | Verifies |
+|---|------|---------|
+| 2 | `allFields_producesOrderedCsvLine` | All four fields emitted in schema column order |
+| 3 | `extraFieldsInRow_ignoredInOutput` | Row fields not in schema are silently omitted |
+
+### Null / missing fields
+
+| # | Test | Verifies |
+|---|------|---------|
+| 4 | `nullField_serializedAsEmptyString` | `null` field value → empty string (consecutive commas) |
+| 5 | `absentField_serializedAsEmptyString` | Field not set in Row at all → empty string |
+| 6 | `nullRow_allEmptyFields` | `null` Row → all commas, no values |
+
+### RFC 4180 quoting
+
+| # | Test | Verifies |
+|---|------|---------|
+| 7 | `fieldWithComma_isQuoted` | Value containing `,` wrapped in double-quotes |
+| 8 | `fieldWithDoubleQuote_isQuotedAndEscaped` | Value containing `"` → quoted with internal `""` |
+| 9 | `fieldWithNewline_isQuoted` | Value containing `\n` → quoted |
+
+### `encodeCsvField` static helper
+
+| # | Test | Verifies |
+|---|------|---------|
+| 10 | `encodeCsvField_plainString_noQuotes` | Plain string returned as-is |
+| 11 | `encodeCsvField_null_emptyString` | `null` → `""` |
+| 12 | `encodeCsvField_containsComma_quoted` | `"a,b"` → `"\"a,b\""` |
+| 13 | `encodeCsvField_containsQuote_escapedAndQuoted` | `say "hi"` → `"say ""hi"""` |
+| 14 | `encodeCsvField_integer_asString` | Integer `42` → `"42"` |
+| 15 | `encodeCsvField_boolean_asString` | Boolean `true` → `"true"` |
+
+### Kafka ProducerRecord
+
+| # | Test | Verifies |
+|---|------|---------|
+| 16 | `serialize_correctTopic` | Output record targets the configured topic |
+| 17 | `serialize_valueIsUtf8CsvLine` | Record value is the UTF-8 encoded CSV line |
+| 18 | `serialize_kafkaKeyPropagated` | Original Kafka key copied onto output record |
+
+---
+
+## 10. NetflixCategoriesTest
 
 **Package:** `com.pipeline`
 **File:** `NetflixCategoriesTest.java`
 **Type:** End-to-end integration tests — full Netflix JSON fixture (5 search engines)
 
 ### Scenario A — No splitting: input schema == output schema
-
-The full Netflix JSON is flattened directly into a single `Row` without array splitting and reconstructed back. Output JSON must be structurally equal to input.
 
 | # | Test | Verifies |
 |---|------|---------|
@@ -186,72 +320,42 @@ The full Netflix JSON is flattened directly into a single `Row` without array sp
 ### Scenario B — Split on `search_engines`: one input → multiple output messages
 
 `ArraySplitterFunction` with `pageSize=2` on the 5-engine array → 3 pages (counts: 2, 2, 1).
-Uses `PaginationSchema("search_engines", "page_index", "total_pages", "page_count")` — field names deliberately differ from the persons schema to prove schema-agnosticism.
 
 | # | Test | Verifies |
 |---|------|---------|
 | 4 | `scenarioB_splitProducesThreePagesFromFiveEngines` | `⌈5/2⌉ = 3` pages produced |
-| 5 | `scenarioB_paginationMetadataIsCorrectOnAllPages` | Each page: correct `page_index` (0/1/2), `total_pages=3`, `page_count` (2/2/1), `search_engines` is an array of expected size |
+| 5 | `scenarioB_paginationMetadataIsCorrectOnAllPages` | Each page: correct `page_index` (0/1/2), `total_pages=3`, `page_count` (2/2/1) |
 | 6 | `scenarioB_firstPageContainsCorrectSearchEngines` | Page 0 has "Action & Adventure" and "Action Comedies" |
 | 7 | `scenarioB_lastPageHasOneEngineWithCorrectData` | Page 2 has 1 engine: "Anime Series", `last_used=12`, `imdb_rating=8.3` |
-| 8 | `scenarioB_eachPageCanBeFlattenedIndependently` | Each page flattens into exactly 1 Row with correct `page_index` (as `Long`) and `total_pages=3L` |
+| 8 | `scenarioB_eachPageCanBeFlattenedIndependently` | Each page flattens into exactly 1 Row with correct metadata |
 | 9 | `scenarioB_allFiveEnginesReconstructedAcrossPages` | Collecting names across all pages produces all 5 engines in original order |
 
 ---
 
-## 9. UpperCaseMapFunctionTest
+## 11. UpperCaseMapFunctionTest
 
 **Package:** `com.pipeline.processing`
 **File:** `processing/UpperCaseMapFunctionTest.java`
-**Type:** Unit tests for `matches()` + Flink integration tests — `OneInputStreamOperatorTestHarness` with `StreamMap`
+**Type:** Unit tests for `matches()` + Flink integration tests
 
-All integration tests use `FlatteningDeserializer` to produce real flattened `Row` objects from inline JSON, then apply `UpperCaseMapFunction` in fallback mode (no vendor JAR).
-
-### Unit tests — `matches(String pattern, String fieldName)` (static, package-private)
-
-| # | Test | Input | Expected |
-|---|------|-------|---------|
-| 1 | `matches_exactPattern_sameField_returnsTrue` | `"person.name"` vs `"person.name"` | `true` |
-| 2 | `matches_exactPattern_differentField_returnsFalse` | `"person.name"` vs `"person.age"` | `false` |
-| 3 | `matches_wildcardMiddleSegment_numericIndex_returnsTrue` | `"search_engines.*.imdb.director"` vs `"search_engines.0.imdb.director"` and `"…4…"` | `true` both |
-| 4 | `matches_wildcardMiddleSegment_wrongTrailingField_returnsFalse` | `"search_engines.*.imdb.director"` vs `"search_engines.0.imdb.title"` | `false` |
-| 5 | `matches_wildcardPattern_segmentCountMismatch_returnsFalse` | 4-segment pattern vs 2-segment field | `false` |
-| 6 | `matches_noWildcard_differentIndex_returnsFalse` | `"search_engines.0.imdb.director"` vs `"search_engines.1.imdb.director"` | `false` |
-| 7 | `matches_wildcardAloneAsEntirePattern_matchesAnyTopLevelKey` | `"*"` vs `"name"` → true; `"*"` vs `"person.name"` → false (segment mismatch) | As expected |
-
-### Netflix — specific director (exact pattern)
-
-Fixture: 3-engine Netflix JSON. Pattern: `"search_engines.0.imdb.director"`.
+### Unit tests — `matches(String pattern, String fieldName)`
 
 | # | Test | Verifies |
 |---|------|---------|
-| 8 | `netflix_exactPattern_uppercasesOnlyTargetDirector` | Engine 0 director → `"SAM HARGRAVE"`; engines 1 and 2 directors unchanged |
-| 9 | `netflix_exactPattern_nonDirectorFieldsUnchanged` | `imdb.title`, `application.name`, `search_engines.0.name` all unchanged |
+| 1 | `matches_exactPattern_sameField_returnsTrue` | `"person.name"` vs `"person.name"` → `true` |
+| 2 | `matches_exactPattern_differentField_returnsFalse` | `"person.name"` vs `"person.age"` → `false` |
+| 3 | `matches_wildcardMiddleSegment_numericIndex_returnsTrue` | `"search_engines.*.imdb.director"` matches index 0 and 4 |
+| 4 | `matches_wildcardMiddleSegment_wrongTrailingField_returnsFalse` | `*.director` vs `*.title` → `false` |
+| 5 | `matches_wildcardPattern_segmentCountMismatch_returnsFalse` | 4-segment pattern vs 2-segment field → `false` |
+| 6 | `matches_noWildcard_differentIndex_returnsFalse` | Exact index 0 pattern vs index 1 field → `false` |
+| 7 | `matches_wildcardAloneAsEntirePattern_matchesAnyTopLevelKey` | `"*"` matches `"name"` but not `"person.name"` |
 
-### Netflix — all directors (wildcard pattern)
-
-Pattern: `"search_engines.*.imdb.director"`.
-
-| # | Test | Verifies |
-|---|------|---------|
-| 10 | `netflix_wildcardPattern_uppercasesAllDirectors` | All three directors uppercased: `"SAM HARGRAVE"`, `"DAVID LEITCH"`, `"GEORGE MILLER"` |
-| 11 | `netflix_wildcardPattern_nonDirectorFieldsUntouched` | `imdb.genre` fields and `application.name` unchanged |
-
-### Persons — firstName uppercase
-
-Fixture: 2-person persons JSON.
+### Netflix and Persons integration tests
 
 | # | Test | Pattern | Verifies |
 |---|------|---------|---------|
-| 12 | `person_exactPattern_uppercasesOnlyFirstPersonName` | `"persons.0.firstName"` | `persons.0.firstName="JOHN"`; lastName and `persons.1.firstName` unchanged |
-| 13 | `person_wildcardPattern_uppercasesAllFirstNames` | `"persons.*.firstName"` | Both `"JOHN"` and `"JANE"`; both lastNames unchanged |
-
-### Multiple patterns in a single pass
-
-| # | Test | Verifies |
-|---|------|---------|
-| 14 | `multiplePatterns_allMatchingFieldsUppercased` | `["search_engines.0.imdb.director", "application.name"]` → both uppercased; engine 1 director unchanged |
-| 15 | `multiplePatterns_wildcardActorsAndExactTitle` | `["search_engines.*.imdb.actors", "search_engines.1.imdb.title"]` → all 3 actors uppercased; only title[1] uppercased; titles[0] and [2] unchanged |
+| 8 | `netflix_exactPattern_uppercasesOnlyTargetDirector` | `"search_engines.0.imdb.director"` | Engine 0 director → `"SAM HARGRAVE"`; others unchanged |
+| 9–15 | _(additional field/wildcard tests)_ | Various | All directors / actors uppercased; other fields untouched |
 
 ---
 
@@ -259,7 +363,7 @@ Fixture: 2-person persons JSON.
 
 ### Flink Test Harness setup patterns
 
-**For `ProcessFunction<byte[], Row>` (e.g. `FlatteningDeserializer`):**
+**For `ProcessFunction<byte[], Row>` (e.g. `CsvDeserializer`, `FlatteningDeserializer`):**
 ```java
 var harness = new OneInputStreamOperatorTestHarness<>(new ProcessOperator<>(fn));
 harness.setup(FlatRowSerializer.INSTANCE);
@@ -269,7 +373,7 @@ List<Row> rows = harness.extractOutputValues();
 harness.close();
 ```
 
-**For `ProcessFunction<byte[], byte[]>` (e.g. `ArraySplitterFunction`, `MessageValidatorFunction`):**
+**For `ProcessFunction<byte[], byte[]>` (e.g. `ArraySplitterFunction`):**
 ```java
 var harness = new OneInputStreamOperatorTestHarness<>(new ProcessOperator<>(fn));
 harness.setup(PrimitiveArrayTypeInfo.BYTE_PRIMITIVE_ARRAY_TYPE_INFO
@@ -280,13 +384,13 @@ List<byte[]> out = harness.extractOutputValues();
 harness.close();
 ```
 
-**For `RichMapFunction<Row, Row>` (e.g. `UpperCaseMapFunction`):**
+**For `MapFunction<ProcessedMessage, ProcessedMessage>` (e.g. `UpperCaseMapFunction`):**
 ```java
 var harness = new OneInputStreamOperatorTestHarness<>(new StreamMap<>(fn));
-harness.setup(FlatRowSerializer.INSTANCE);
+harness.setup(ProcessedMessageTypeInfo.INSTANCE.createSerializer(new ExecutionConfig()));
 harness.open();
-harness.processElement(row, System.currentTimeMillis());
-List<Row> out = harness.extractOutputValues();
+harness.processElement(msg, System.currentTimeMillis());
+List<ProcessedMessage> out = harness.extractOutputValues();
 harness.close();
 ```
 
@@ -304,3 +408,6 @@ if (rawDlq != null) {
 ### Integer → Long promotion
 All integer-valued fields in a `Row` round-tripped through `FlatRowSerializer` come back as `Long`.
 Use `Long` literals in assertions: `assertEquals(3L, row.getField("total_pages"))`.
+
+### CSV types are always String
+`CsvDeserializer` stores all values as `String` (CSV has no type information). Do not assert `Long` or `Integer` from CSV-deserialized rows.

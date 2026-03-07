@@ -5,12 +5,10 @@
 A production-ready Apache Flink 1.20 streaming pipeline that:
 
 1. Consumes raw JSON messages from Kafka
-2. Splits large arrays into paginated batches
-3. Validates required fields before processing
-4. Flattens nested JSON into a named-field `Row`
-5. Applies string transformations (e.g. uppercase) to selected fields via configurable patterns
-6. Reconstructs the `Row` back into hierarchical JSON
-7. Publishes results to an output Kafka topic, routing failures to a Dead Letter Queue (DLQ)
+2. Validates required fields, splits large arrays into paginated batches, and flattens nested JSON into a named-field `Row` — all in a **single operator, single JSON parse**
+3. Applies string transformations (e.g. uppercase) to selected fields via configurable patterns
+4. Reconstructs the `Row` back into hierarchical JSON **or** serializes it as a flat CSV line
+5. Publishes results to an output Kafka topic, routing failures to a Dead Letter Queue (DLQ)
 
 ---
 
@@ -20,32 +18,27 @@ A production-ready Apache Flink 1.20 streaming pipeline that:
 KafkaSource (input-topic, byte[])
       │
       ▼
-MessageValidatorFunction          ──side-output──► DLQ KafkaSink
-(ProcessFunction<byte[], byte[]>)
-Required-field guard
-      │
-      ▼
-ArraySplitterFunction             ──side-output──► DLQ KafkaSink
-(ProcessFunction<byte[], byte[]>)
-1 message → N paginated pages
-      │ byte[] (one page per emit)
-      ▼
-FlatteningDeserializer            ──side-output──► DLQ KafkaSink
-(ProcessFunction<byte[], Row>)
-JSON → Row.withNames() (dot-notation keys)
-      │ Row (named)
+ValidateSplitFlattenFunction          ──side-output──► DLQ KafkaSink (dlq-topic)
+(ProcessFunction<ProcessedMessage, ProcessedMessage>)
+1. Validate required top-level fields against input schema
+2. Validate required fields in every array item
+3. Split input array into pages of configurable size
+4. Flatten each page → Row.withNames() (dot-notation keys)
+      │ ProcessedMessage (Row payload)
       ▼
 UpperCaseMapFunction
-(RichMapFunction<Row, Row>)
-Applies string processor to matching fields
-      │ Row (mutated)
+(MapFunction<ProcessedMessage, ProcessedMessage>)
+Applies string processor to fields matching configured patterns
+      │ ProcessedMessage (mutated Row)
       ▼
-ReconstructSerializer
-Row → hierarchical JSON bytes
+ReconstructSerializer  ── OR ──  CsvSerializer
+Row → hierarchical JSON          Row → flat CSV line
       │
       ▼
 KafkaSink (output-topic, EXACTLY_ONCE)
 ```
+
+**Single-parse design:** The former three-operator chain (`MessageValidatorFunction` → `ArraySplitterFunction` → `FlatteningDeserializer`) has been merged into `ValidateSplitFlattenFunction`. Input JSON is parsed once; each page is flattened directly into a `Row` with no intermediate `byte[]` round-trip.
 
 ---
 
@@ -75,32 +68,31 @@ Key config keys:
 | `checkpoint.interval-ms` | `60000` | Checkpoint interval |
 | `processing.third-party-jar` | _(blank)_ | Path to vendor processor JAR |
 | `processing.uppercase-field-keys` | `person.name,name` | Comma-separated field patterns to uppercase |
-| `splitting.input-array-field` | `persons` | Array field name in the raw input |
 | `splitting.page-size` | `100` | Max items per output page |
 | `flatten.null-handling` | `INCLUDE` | `INCLUDE` / `EXCLUDE` / `REPLACE_EMPTY_STRING` |
 
 ---
 
-### Validation
+### Common Model
 
-#### `com.pipeline.validation.MessageValidatorFunction`
+#### `com.pipeline.common.ProcessedMessage`
 
-`ProcessFunction<byte[], byte[]>` — validates required fields before splitting.
+Envelope that carries Kafka metadata alongside the business payload (`Row`) through every operator:
 
-**Two validation layers:**
+| Field | Description |
+|-------|-------------|
+| `kafkaKey` | Original Kafka record key (may be null) |
+| `originalBytes` | Raw Kafka value bytes — preserved for DLQ use in any operator |
+| `headers` | Kafka message headers as `Map<String, byte[]>` |
+| `payload` | Business `Row` (null at source; populated by `ValidateSplitFlattenFunction`) |
 
-1. **Top-level** — every name in `requiredTopLevelFields` must appear as a direct child of the root JSON object.
-2. **Array-item** — every name in `requiredItemFields` must appear in each element of the array identified by `inputArrayField`.
+Immutable; `withPayload(Row)` returns a new instance with all metadata preserved.
 
-Any violation routes the raw bytes to `DLQ_TAG ("dlq-validator")` with a human-readable error that names the missing field and (for array items) its 0-based index: `"missing field 'lastName' in persons[2]"`.
+#### `com.pipeline.common.DlqRecord`
 
-Valid messages pass through **unchanged** (same bytes, same reference).
+Carries a failed message to the DLQ: original bytes, error message, error class, timestamp, source topic/partition/offset. Serialized to Kafka JSON via `DlqSerializationSchema`.
 
----
-
-### Splitting
-
-#### `com.pipeline.splitting.model.PaginationSchema`
+#### `com.pipeline.common.PaginationSchema`
 
 Immutable `Serializable` value object holding four field names for the output JSON page:
 
@@ -111,73 +103,127 @@ Immutable `Serializable` value object holding four field names for the output JS
 | `totalFieldName` | Total page count (e.g. `"total"`) |
 | `countFieldName` | Items in this page (e.g. `"count"`) |
 
+---
+
+### Merged Operator: ValidateSplitFlattenFunction
+
+#### `com.pipeline.ValidateSplitFlattenFunction`
+
+`ProcessFunction<ProcessedMessage, ProcessedMessage>` — the core pipeline operator.
+
+**Processing steps per message (single JSON parse):**
+
+1. Parse `byte[]` → `JsonNode` (once).
+2. Validate required top-level fields against input schema → DLQ on failure.
+3. Validate required fields in every array item → DLQ on failure.
+4. Split the input array into pages of `pageSize` items.
+5. For each page: write pagination metadata and flatten array items directly into a named `Row` — no intermediate `byte[]` or `ObjectNode` page is constructed.
+
+DLQ tag: `"dlq-validate-split-flatten"`.
+
+**Conversion count vs. former three-operator chain:**
+```
+Former:  byte[] → JsonNode → byte[] (page) → JsonNode → Row   (4 conversions)
+Now:     byte[] → JsonNode → Row                               (2 conversions)
+```
+
+---
+
+### Schema Utilities
+
 #### `com.pipeline.splitting.schema.SchemaAnalyzer`
 
-Pure-static utility: `JsonNode (schema root) → PaginationSchema`.
+Pure-static utility providing three independent capabilities:
 
-**Supports any valid JSON Schema structure** — no mandatory `properties` or `required` at root:
+**1. `loadSchema(String classpathPath) → JsonNode`**
 
-- Flat `"properties"` at root
-- Properties inside `allOf` / `anyOf` / `oneOf` sub-schemas (any depth)
-- Properties inside `if` / `then` / `else` branches
-- Properties in `$defs` / `definitions` referenced by local `$ref` (JSON Pointer resolved)
-- Any combination of the above
+Centralized schema file loader — used by `JsonFlattenPipeline`, `CsvSerializer`, and `CsvDeserializer`. Reads the resource from the classpath and returns a parsed `JsonNode`. Throws `IllegalStateException` if not found.
 
-**Detection heuristics** (work for any conforming schema):
+**2. `analyze(JsonNode) → PaginationSchema`**
+
+Derives a `PaginationSchema` from any JSON Schema document, regardless of how properties are declared. Supports flat `"properties"`, `allOf`/`anyOf`/`oneOf`, `if`/`then`/`else`, and `$defs`/`definitions` with `$ref` resolution.
+
+Detection heuristics:
 
 | Role | Rule |
 |------|------|
 | Array data field | Property with `"type": "array"` |
-| Total pages field | Only integer property with `"minimum": 1` |
-| Page index field | Integer with `"minimum": 0` + description containing `"index"`, `"current"`, or `"0-based"` (case-insensitive) |
+| Total pages field | Only integer with `"minimum": 1` |
+| Page index field | Integer with `"minimum": 0` + description containing `"index"`, `"current"`, or `"0-based"` |
 | Item count field | The sole remaining integer property |
 
 Throws `IllegalArgumentException` if any role cannot be uniquely identified.
+
+**3. `extractCsvColumns(JsonNode) → List<String>`**
+
+Extracts an **ordered** list of CSV column names from a JSON Schema:
+
+- The schema's `"required"` array defines every column and their order — there are no optional CSV columns.
+- If a `"properties"` object is present, every key in it must also appear in `"required"` (validation enforced at load time).
+- Column names may use dot-notation to reference flat `Row` fields (e.g. `"address.street"`).
+- Returns an immutable list.
+
+#### `com.pipeline.validation.InputSchemaInfo`
+
+Immutable value object produced by `InputSchemaInfo.analyze(JsonNode)`. Extracts:
+
+- **Array field name** — first `"type":"array"` property at root.
+- **Required fields** — all required fields at any depth as dot-notation paths.
+- **Required item fields** — required fields from the array's `"items"` sub-schema.
+
+Handles `allOf` (union), `anyOf`/`oneOf` (intersection) composition keywords.
 
 #### `com.pipeline.splitting.page.PageBuilder`
 
 Pure-static utility: builds one output page `ObjectNode` from a `PaginationSchema`, an `ArrayNode` slice, a page index, and a total count. No Flink dependency.
 
-#### `com.pipeline.splitting.ArraySplitterFunction`
+---
 
-`ProcessFunction<byte[], byte[]>` implementing `ResultTypeQueryable<byte[]>`.
+### Deserialization
 
-**Algorithm:**
-1. Guard: null/empty bytes → `DLQ_TAG ("dlq-splitter")`
-2. Parse root JSON
-3. Find `inputArrayField`; if missing or not an array → DLQ
-4. `totalPages = ⌈arraySize / pageSize⌉`
-5. For each page `p`: slice `[p·S, min((p+1)·S, N))`, call `PageBuilder.build()`, emit as `byte[]`
-6. Any exception → DLQ
+#### `com.pipeline.deserialization.KafkaEnvelopeDeserializer`
 
-Uses a `ThreadLocal<ObjectMapper>` (one mapper per TaskManager thread, never serialized).
+`KafkaRecordDeserializationSchema<ProcessedMessage>` — Kafka source deserializer. Captures full Kafka envelope (key, value bytes, headers) into a `ProcessedMessage` with `payload=null`.
+
+#### `com.pipeline.deserialization.CsvDeserializer`
+
+`ProcessFunction<byte[], Row>` — converts a raw UTF-8 CSV line into a named-field `Row`.
+
+**Column contract:** Column names and order come from `SchemaAnalyzer.loadSchema` + `SchemaAnalyzer.extractCsvColumns`. The schema's `"required"` array defines every column. All fields are mandatory — column count mismatch routes to `DLQ_TAG ("dlq-csv")`.
+
+**Field mapping:** positional — `column[i] → row.setField(column[i], value[i])`. Empty string → `null` in Row.
+
+**RFC 4180 parsing:** quoted fields, `""` escape for embedded quotes, trailing comma = empty final field.
+
+The column list is stored as a plain `List<String>` serialized with the operator — no file I/O at worker start-up.
 
 ---
 
 ### Serialization
 
-#### `com.pipeline.serialization.FlatteningDeserializer`
-
-`ProcessFunction<byte[], Row>` — the core flattening step.
-
-Converts a JSON bytes payload into a Flink `Row` in named-field mode (`Row.withNames()`).
-Field names use **dot-notation paths**: nested object keys become `parent.child`, array elements become `array.0`, `array.1`, etc.
-
-Example: `{"a": {"b": [1, 2]}}` → fields `a.b.0 = 1`, `a.b.1 = 2`.
-
-Null handling is configurable via `PipelineConfig.NullHandling`.
-
-Failed parses route to `DLQ_TAG ("dlq-flatten")`.
-
 #### `com.pipeline.serialization.ReconstructSerializer`
 
-`KafkaRecordSerializationSchema<Row>` — inverts the flattening step.
+`KafkaRecordSerializationSchema<ProcessedMessage>` — inverts the flattening step.
 
-Reads a named-field `Row` and reconstructs the original hierarchical JSON by interpreting each dot-notation key as a nested path. Numeric segments become JSON array indices.
+Reads a named-field `Row`, reconstructs the original hierarchical JSON by interpreting each dot-notation key as a nested path. Numeric segments become JSON array indices. Uses `TreeMap` for lexicographic ordering (parent paths before children). Propagates original Kafka key and headers onto the output record.
 
-#### `com.pipeline.serialization.typeinfo.FlatRowSerializer`
+#### `com.pipeline.serialization.CsvSerializer`
 
-Custom `TypeSerializer<Row>` for named-field `Row` objects.
+`KafkaRecordSerializationSchema<ProcessedMessage>` — serializes a `Row` to a flat CSV line.
+
+**Column contract:** Column names and order come from `SchemaAnalyzer.loadSchema` + `SchemaAnalyzer.extractCsvColumns`. The schema's `"required"` array defines every column. Fields absent from the Row are written as empty strings.
+
+**RFC 4180 encoding:** values containing `,`, `"`, `\n`, or `\r` are wrapped in double-quotes; embedded `"` is doubled to `""`.
+
+The column list is stored as a plain `List<String>` serialized with the operator — no file I/O at worker start-up.
+
+#### `com.pipeline.serialization.DlqSerializationSchema`
+
+`KafkaRecordSerializationSchema<DlqRecord>` — serializes DLQ records to JSON for the dead letter topic.
+
+#### `com.pipeline.common.typeinfo.FlatRowSerializer`
+
+Custom `TypeSerializer<Row>` for named-field `Row` objects. Avoids Kryo.
 
 Wire format per record:
 ```
@@ -188,7 +234,7 @@ for each field:
 
 Tags: 0=null, 1=String, 2=Integer, 3=Long, 4=Double, 5=Float, 6=Boolean, 7=BigDecimal.
 
-**Important:** all integer JSON numbers survive as `Long` after passing through this serializer (no `Integer` values in deserialized rows).
+**Important:** all integer JSON numbers survive as `Long` after passing through this serializer.
 
 ---
 
@@ -196,24 +242,16 @@ Tags: 0=null, 1=String, 2=Integer, 3=Long, 4=Double, 5=Float, 6=Boolean, 7=BigDe
 
 #### `com.pipeline.processing.UpperCaseMapFunction`
 
-`RichMapFunction<Row, Row>` — applies a string processor to selected named fields.
+`MapFunction<ProcessedMessage, ProcessedMessage>` — applies a string processor to selected named fields.
 
 **Field matching** — `matches(String pattern, String fieldName)`:
 - Exact match: `"person.name"` matches only `"person.name"`
-- Wildcard: `*` as a standalone dot-separated segment matches any single segment (including numeric array indices)
+- Wildcard: `*` as a standalone dot-separated segment matches any single segment
   - `"search_engines.*.imdb.director"` matches `"search_engines.0.imdb.director"`, `"search_engines.4.imdb.director"`, etc.
-  - Multiple `*` segments are supported
-
-**Processing behaviour:**
-- All fields whose name matches **any** configured pattern are processed — not just the first match
-- For each field name, the first pattern that matches wins (subsequent patterns skipped for that field)
-- Only `String`-valued fields are processed; other types are skipped silently
 
 **Processor backends:**
-1. **Vendor JAR** (production): loaded once per TaskManager subtask via `URLClassLoader`; a bound `MethodHandle` is resolved from the vendor class's `String process(String)` method (~10× faster than `Method.invoke()` after JIT warm-up)
+1. **Vendor JAR** (production): loaded once per TaskManager subtask via `URLClassLoader`; a bound `MethodHandle` resolves the vendor class's `String process(String)` method (~10× faster than `Method.invoke()` after JIT warm-up)
 2. **Fallback** (development/testing): `String.toUpperCase(Locale.ROOT)` when `processing.third-party-jar` is blank
-
-Metrics exposed: `row.field.processed` (counter), `row.field.no_match` (counter).
 
 ---
 
@@ -221,19 +259,29 @@ Metrics exposed: `row.field.processed` (counter), `row.field.no_match` (counter)
 
 | File | Description |
 |------|-------------|
-| `schemas/input-person.schema.json` | Single person object; `required: [firstName, lastName, age]`; no array |
+| `schemas/input-person.schema.json` | Single person object; `required: [firstName, lastName, age]`; nested `address` object |
 | `schemas/output-persons-paginated.schema.json` | Paginated persons page; `required: [persons, index, total, count]` |
 | `schemas/input-netflix-categories.schema.json` | Nested Netflix categories input; `application` object + `search_engines` array with IMDB sub-objects |
-| `schemas/output-netflix-flat.schema.json` | Flat Netflix output; all fields at root level (`app_name`, `imdb_*`, etc.) |
+| `schemas/output-netflix-flat.schema.json` | Flat Netflix output; all fields at root level |
+| `schemas/csv-person-flat.schema.json` | CSV schema for a person record; `required: [firstName, lastName, age, address.street]` — all fields mandatory, order matches CSV columns |
 
----
+### CSV Schema Contract
 
-## Model
+CSV schemas use standard JSON Schema format with one rule: **the `"required"` array defines both the complete set of columns and their order**. All properties must be required (no optional CSV columns). Column names may use dot-notation to reference flat `Row` fields.
 
-#### `com.pipeline.model.DlqRecord`
+```json
+{
+  "required": ["firstName", "lastName", "age", "address.street"],
+  "properties": {
+    "firstName":      { "type": "string"  },
+    "lastName":       { "type": "string"  },
+    "age":            { "type": "integer" },
+    "address.street": { "type": "string"  }
+  }
+}
+```
 
-Carries a failed message to the DLQ: original bytes + error message string.
-Serialized to Kafka as JSON via `DlqSerializationSchema`.
+`SchemaAnalyzer.extractCsvColumns()` validates this contract at construction time and returns an immutable ordered list.
 
 ---
 
@@ -250,11 +298,14 @@ Serialized to Kafka as JSON via `DlqSerializationSchema`.
 
 | Decision | Rationale |
 |----------|-----------|
-| `Row.withNames()` instead of `POJO` | Schema-agnostic; field set determined at runtime from JSON |
+| `Row.withNames()` instead of POJO | Schema-agnostic; field set determined at runtime from JSON |
 | Dot-notation path keys | Simple, consistent, round-trippable; no nested Row objects needed |
+| Merge validate + split + flatten into one operator | Eliminates intermediate `byte[]` serialization; single JSON parse per message |
+| `ProcessedMessage` envelope | Preserves Kafka key and headers through all operators for DLQ and output propagation |
 | `PaginationSchema` value object | Decouples field name knowledge from splitting logic; enables schema-agnostic splitter |
-| `SchemaAnalyzer` pure-static | Fully testable without Flink; reusable in non-streaming contexts |
+| `SchemaAnalyzer` as shared schema utility | Single place for file loading (`loadSchema`) and all schema analysis — pagination, CSV columns; no duplication |
+| CSV column order from `required` array | `required` is already an ordered JSON array; no extra extension needed; same schema format as JSON |
 | `ThreadLocal<ObjectMapper>` in Flink operators | ObjectMapper is not serializable; one instance per thread avoids contention |
 | `MethodHandle` for vendor processor | ~10× faster than reflection `Method.invoke()` after JIT warm-up; loaded once per subtask |
+| Column list serialized with operator | `List<String>` serializes with the operator graph; no file I/O at worker start-up |
 | Wildcard `*` per dot-segment | Matches array indices naturally; simple to reason about; no regex overhead |
-| All-matching field processing | Enables bulk operations (uppercase all directors) with a single pattern |
