@@ -36,47 +36,24 @@ class UpperCaseMapFunctionTest {
     // ── Fixtures ──────────────────────────────────────────────────────────────
 
     /** Three-engine Netflix JSON — enough to verify wildcard vs. exact behaviour. */
-    private static final String NETFLIX_JSON = """
-            {
-              "application": { "name": "Netflix", "app_id": "netflix-test", "version": "v1" },
-              "search_engines": [
-                {
-                  "category": "NetflixCategories", "name": "Action",
-                  "list": ["http://url0"], "pinned": true, "last_used": 0,
-                  "imdb": { "id": "tt1", "title": "Extraction", "year": "2020",
-                            "rated": "R", "genre": "Action, Thriller",
-                            "director": "Sam Hargrave", "actors": "Chris Hemsworth",
-                            "imdb_rating": 6.8 }
-                },
-                {
-                  "category": "NetflixCategories", "name": "Comedy",
-                  "list": ["http://url1"], "pinned": false, "last_used": 1,
-                  "imdb": { "id": "tt2", "title": "Deadpool 2", "year": "2018",
-                            "rated": "R", "genre": "Action, Adventure, Comedy",
-                            "director": "David Leitch", "actors": "Ryan Reynolds",
-                            "imdb_rating": 7.6 }
-                },
-                {
-                  "category": "NetflixCategories", "name": "Sci-Fi",
-                  "list": ["http://url2"], "pinned": false, "last_used": 2,
-                  "imdb": { "id": "tt3", "title": "Mad Max: Fury Road", "year": "2015",
-                            "rated": "R", "genre": "Action, Adventure, Sci-Fi",
-                            "director": "George Miller", "actors": "Charlize Theron",
-                            "imdb_rating": 8.1 }
-                }
-              ]
-            }
-            """;
+    private static final String NETFLIX_JSON = "{"
+            + "\"application\":{\"name\":\"Netflix\",\"app_id\":\"netflix-test\",\"version\":\"v1\"},"
+            + "\"search_engines\":["
+            + "{\"category\":\"NetflixCategories\",\"name\":\"Action\",\"list\":[\"http://url0\"],\"pinned\":true,\"last_used\":0,"
+            + "\"imdb\":{\"id\":\"tt1\",\"title\":\"Extraction\",\"year\":\"2020\",\"rated\":\"R\","
+            + "\"genre\":\"Action, Thriller\",\"director\":\"Sam Hargrave\",\"actors\":\"Chris Hemsworth\",\"imdb_rating\":6.8}},"
+            + "{\"category\":\"NetflixCategories\",\"name\":\"Comedy\",\"list\":[\"http://url1\"],\"pinned\":false,\"last_used\":1,"
+            + "\"imdb\":{\"id\":\"tt2\",\"title\":\"Deadpool 2\",\"year\":\"2018\",\"rated\":\"R\","
+            + "\"genre\":\"Action, Adventure, Comedy\",\"director\":\"David Leitch\",\"actors\":\"Ryan Reynolds\",\"imdb_rating\":7.6}},"
+            + "{\"category\":\"NetflixCategories\",\"name\":\"Sci-Fi\",\"list\":[\"http://url2\"],\"pinned\":false,\"last_used\":2,"
+            + "\"imdb\":{\"id\":\"tt3\",\"title\":\"Mad Max: Fury Road\",\"year\":\"2015\",\"rated\":\"R\","
+            + "\"genre\":\"Action, Adventure, Sci-Fi\",\"director\":\"George Miller\",\"actors\":\"Charlize Theron\",\"imdb_rating\":8.1}}]}";
 
     /** Two-person JSON — firstName, lastName, age only. */
-    private static final String PERSONS_JSON = """
-            {
-              "persons": [
-                { "firstName": "John", "lastName": "Doe",   "age": 30 },
-                { "firstName": "Jane", "lastName": "Smith",  "age": 28 }
-              ]
-            }
-            """;
+    private static final String PERSONS_JSON = "{"
+            + "\"persons\":["
+            + "{\"firstName\":\"John\",\"lastName\":\"Doe\",\"age\":30},"
+            + "{\"firstName\":\"Jane\",\"lastName\":\"Smith\",\"age\":28}]}";
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 

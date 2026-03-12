@@ -16,6 +16,7 @@ import org.junit.jupiter.api.Test;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -75,11 +76,9 @@ class AnyTest {
     @Test
     void john_firstNameAndAge_noAddress_validRow() throws Exception {
         // firstName branch of anyOf, no address → address.street check skipped
-        byte[] bytes = """
-                {
-                  "firstName": "John",
-                  "age": 30
-                }""".strip().getBytes(StandardCharsets.UTF_8);
+        byte[] bytes = ("{"
+                + "\"firstName\":\"John\","
+                + "\"age\":30}").getBytes(StandardCharsets.UTF_8);
 
         Row row = flatten(bytes);
 
@@ -93,15 +92,13 @@ class AnyTest {
     void emily_firstNameAgeAndAddress_validRow() throws Exception {
         // firstName branch of anyOf, address present with street → passes nested required
         // address.oneOf: city is present (matches oneOf branch 1)
-        byte[] bytes = """
-                {
-                  "firstName": "Emily",
-                  "age": 19,
-                  "address": {
-                    "street": "456 Maple Avenue",
-                    "city":   "Los Angeles"
-                  }
-                }""".strip().getBytes(StandardCharsets.UTF_8);
+        byte[] bytes = ("{"
+                + "\"firstName\":\"Emily\","
+                + "\"age\":19,"
+                + "\"address\":{"
+                + "\"street\":\"456 Maple Avenue\","
+                + "\"city\":\"Los Angeles\"}}")
+                .getBytes(StandardCharsets.UTF_8);
 
         Row row = flatten(bytes);
 
@@ -115,11 +112,9 @@ class AnyTest {
     @Test
     void smith_lastNameAndAge_noAddress_validRow() throws Exception {
         // lastName branch of anyOf, no address → address.street check skipped
-        byte[] bytes = """
-                {
-                  "lastName": "Smith",
-                  "age": 22
-                }""".strip().getBytes(StandardCharsets.UTF_8);
+        byte[] bytes = ("{"
+                + "\"lastName\":\"Smith\","
+                + "\"age\":22}").getBytes(StandardCharsets.UTF_8);
 
         Row row = flatten(bytes);
 
@@ -134,10 +129,8 @@ class AnyTest {
     @Test
     void missingAge_routedToDlq() throws Exception {
         // age is required at root level — missing it always fails
-        byte[] bytes = """
-                {
-                  "firstName": "David"
-                }""".strip().getBytes(StandardCharsets.UTF_8);
+        byte[] bytes = ("{"
+                + "\"firstName\":\"David\"}").getBytes(StandardCharsets.UTF_8);
 
         DlqRecord dlq = expectDlq(bytes);
         assertTrue(dlq.getErrorMessage().contains("age"),
@@ -147,14 +140,11 @@ class AnyTest {
     @Test
     void addressPresentButStreetMissing_routedToDlq() throws Exception {
         // address.street is required when address is present — city alone is not enough
-        byte[] bytes = """
-                {
-                  "firstName": "Bob",
-                  "age": 25,
-                  "address": {
-                    "city": "Boston"
-                  }
-                }""".strip().getBytes(StandardCharsets.UTF_8);
+        byte[] bytes = ("{"
+                + "\"firstName\":\"Bob\","
+                + "\"age\":25,"
+                + "\"address\":{\"city\":\"Boston\"}}")
+                .getBytes(StandardCharsets.UTF_8);
 
         DlqRecord dlq = expectDlq(bytes);
         assertTrue(dlq.getErrorMessage().contains("address.street"),
@@ -168,7 +158,7 @@ class AnyTest {
         var harness = buildHarness();
         harness.processElement(ProcessedMessage.ofValue(bytes), System.currentTimeMillis());
         List<Row> rows = harness.<ProcessedMessage>extractOutputValues()
-                .stream().map(ProcessedMessage::getPayload).toList();
+                .stream().map(ProcessedMessage::getPayload).collect(Collectors.toList());
         harness.close();
         assertEquals(1, rows.size(), "expected exactly one Row for a valid message");
         assertNull(harness.getSideOutput(ValidateSplitFlattenFunction.DLQ_TAG));

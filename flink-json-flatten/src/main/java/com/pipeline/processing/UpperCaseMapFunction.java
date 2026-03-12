@@ -152,8 +152,8 @@ public final class UpperCaseMapFunction extends RichMapFunction<ProcessedMessage
                 if (!matches(pattern, fieldName)) continue;
 
                 Object raw = row.getField(fieldName);
-                if (raw instanceof String value) {
-                    row.setField(fieldName, applyProcessor(value));
+                if (raw instanceof String) {
+                    row.setField(fieldName, applyProcessor((String) raw));
                     processedCount.inc();
                     anyProcessed = true;
                 }

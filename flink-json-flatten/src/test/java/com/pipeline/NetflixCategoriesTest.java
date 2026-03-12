@@ -46,102 +46,34 @@ class NetflixCategoriesTest {
 
     // ── Test fixture ─────────────────────────────────────────────────────────
 
-    static final String NETFLIX_JSON = """
-            {
-              "application": {
-                "name": "Netflix Categories",
-                "app_id": "netflix-categories@deekshith.in",
-                "version": "v0.1"
-              },
-              "search_engines": [
-                {
-                  "category": "NetflixCategories",
-                  "name": "Action & Adventure",
-                  "list": [
-                    "http://www.netflix.com/browse/genre/1365",
-                    "https://www.netflix.com/title/genre/1365"
-                  ],
-                  "pinned": true,
-                  "last_used": 0,
-                  "imdb": {
-                    "id": "tt8936646", "title": "Extraction", "year": "2020",
-                    "rated": "R", "genre": "Action, Thriller",
-                    "director": "Sam Hargrave",
-                    "actors": "Chris Hemsworth, Rudhraksh Jaiswal",
-                    "imdb_rating": 6.8
-                  }
-                },
-                {
-                  "category": "NetflixCategories",
-                  "name": "Action Comedies",
-                  "list": [
-                    "http://www.netflix.com/browse/genre/43040",
-                    "https://www.netflix.com/browse/genre/43040?region=il"
-                  ],
-                  "pinned": false,
-                  "last_used": 0,
-                  "imdb": {
-                    "id": "tt4158476", "title": "Deadpool 2", "year": "2018",
-                    "rated": "R", "genre": "Action, Adventure, Comedy",
-                    "director": "David Leitch",
-                    "actors": "Ryan Reynolds, Josh Brolin",
-                    "imdb_rating": 7.6
-                  }
-                },
-                {
-                  "category": "NetflixCategories",
-                  "name": "Action Sci-Fi & Fantasy",
-                  "list": [
-                    "http://www.netflix.com/browse/genre/1568",
-                    "https://www.netflix.com/genre/1568"
-                  ],
-                  "pinned": false,
-                  "last_used": 0,
-                  "imdb": {
-                    "id": "tt1392190", "title": "Mad Max: Fury Road", "year": "2015",
-                    "rated": "R", "genre": "Action, Adventure, Sci-Fi",
-                    "director": "George Miller",
-                    "actors": "Charlize Theron, Tom Hardy",
-                    "imdb_rating": 8.1
-                  }
-                },
-                {
-                  "category": "NetflixCategories",
-                  "name": "Horror Movies",
-                  "list": [
-                    "http://www.netflix.com/browse/genre/8711",
-                    "https://www.netflix.com/title/genre/8711"
-                  ],
-                  "pinned": false,
-                  "last_used": 0,
-                  "imdb": {
-                    "id": "tt0365748", "title": "The Descent", "year": "2005",
-                    "rated": "R", "genre": "Adventure, Horror",
-                    "director": "Neil Marshall",
-                    "actors": "Shauna Macdonald, Natalie Mendoza",
-                    "imdb_rating": 7.2
-                  }
-                },
-                {
-                  "category": "NetflixCategories",
-                  "name": "Anime Series",
-                  "list": [
-                    "http://www.netflix.com/browse/genre/7424",
-                    "https://www.netflix.com/browse/genre/7424"
-                  ],
-                  "pinned": true,
-                  "last_used": 12,
-                  "imdb": {
-                    "id": "tt14947990", "title": "Cyberpunk: Edgerunners", "year": "2022",
-                    "rated": "TV-MA", "genre": "Animation, Action, Sci-Fi",
-                    "director": "Ibon Cormenzana",
-                    "actors": "Zach Aguilar, Emi Lo",
-                    "imdb_rating": 8.3
-                  }
-                }
-              ]
-            }
-            """;
+    static final String NETFLIX_JSON = "{"
+            + "\"application\":{\"name\":\"Netflix Categories\",\"app_id\":\"netflix-categories@deekshith.in\",\"version\":\"v0.1\"},"
+            + "\"search_engines\":["
+            + "{\"category\":\"NetflixCategories\",\"name\":\"Action & Adventure\","
+            + "\"list\":[\"http://www.netflix.com/browse/genre/1365\",\"https://www.netflix.com/title/genre/1365\"],"
+            + "\"pinned\":true,\"last_used\":0,\"imdb\":{\"id\":\"tt8936646\",\"title\":\"Extraction\",\"year\":\"2020\","
+            + "\"rated\":\"R\",\"genre\":\"Action, Thriller\",\"director\":\"Sam Hargrave\","
+            + "\"actors\":\"Chris Hemsworth, Rudhraksh Jaiswal\",\"imdb_rating\":6.8}},"
+            + "{\"category\":\"NetflixCategories\",\"name\":\"Action Comedies\","
+            + "\"list\":[\"http://www.netflix.com/browse/genre/43040\",\"https://www.netflix.com/browse/genre/43040?region=il\"],"
+            + "\"pinned\":false,\"last_used\":0,\"imdb\":{\"id\":\"tt4158476\",\"title\":\"Deadpool 2\",\"year\":\"2018\","
+            + "\"rated\":\"R\",\"genre\":\"Action, Adventure, Comedy\",\"director\":\"David Leitch\","
+            + "\"actors\":\"Ryan Reynolds, Josh Brolin\",\"imdb_rating\":7.6}},"
+            + "{\"category\":\"NetflixCategories\",\"name\":\"Action Sci-Fi & Fantasy\","
+            + "\"list\":[\"http://www.netflix.com/browse/genre/1568\",\"https://www.netflix.com/genre/1568\"],"
+            + "\"pinned\":false,\"last_used\":0,\"imdb\":{\"id\":\"tt1392190\",\"title\":\"Mad Max: Fury Road\",\"year\":\"2015\","
+            + "\"rated\":\"R\",\"genre\":\"Action, Adventure, Sci-Fi\",\"director\":\"George Miller\","
+            + "\"actors\":\"Charlize Theron, Tom Hardy\",\"imdb_rating\":8.1}},"
+            + "{\"category\":\"NetflixCategories\",\"name\":\"Horror Movies\","
+            + "\"list\":[\"http://www.netflix.com/browse/genre/8711\",\"https://www.netflix.com/title/genre/8711\"],"
+            + "\"pinned\":false,\"last_used\":0,\"imdb\":{\"id\":\"tt0365748\",\"title\":\"The Descent\",\"year\":\"2005\","
+            + "\"rated\":\"R\",\"genre\":\"Adventure, Horror\",\"director\":\"Neil Marshall\","
+            + "\"actors\":\"Shauna Macdonald, Natalie Mendoza\",\"imdb_rating\":7.2}},"
+            + "{\"category\":\"NetflixCategories\",\"name\":\"Anime Series\","
+            + "\"list\":[\"http://www.netflix.com/browse/genre/7424\",\"https://www.netflix.com/browse/genre/7424\"],"
+            + "\"pinned\":true,\"last_used\":12,\"imdb\":{\"id\":\"tt14947990\",\"title\":\"Cyberpunk: Edgerunners\",\"year\":\"2022\","
+            + "\"rated\":\"TV-MA\",\"genre\":\"Animation, Action, Sci-Fi\",\"director\":\"Ibon Cormenzana\","
+            + "\"actors\":\"Zach Aguilar, Emi Lo\",\"imdb_rating\":8.3}}]}";
 
     static final byte[] NETFLIX_BYTES = NETFLIX_JSON.strip().getBytes(StandardCharsets.UTF_8);
 

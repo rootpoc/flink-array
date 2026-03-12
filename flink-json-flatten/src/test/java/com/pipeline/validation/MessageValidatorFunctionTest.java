@@ -74,7 +74,19 @@ class MessageValidatorFunctionTest {
         return s.getBytes(StandardCharsets.UTF_8);
     }
 
-    private record Result(List<byte[]> out, List<DlqRecord> dlq) {}
+    private static final class Result {
+        private final List<byte[]> out;
+        private final List<DlqRecord> dlq;
+
+        private Result(List<byte[]> out, List<DlqRecord> dlq) {
+            this.out = out;
+            this.dlq = dlq;
+        }
+
+        List<byte[]> out() { return out; }
+
+        List<DlqRecord> dlq() { return dlq; }
+    }
 
     // ══════════════════════════════════════════════════════════════════════════
     // Scenario 1 — missing top-level required field
@@ -87,9 +99,7 @@ class MessageValidatorFunctionTest {
     @Test
     void missingTopLevelRequiredField_routedToDlq() throws Exception {
         // "persons" is absent; array is stored under "data" instead
-        byte[] input = json("""
-                {"data":[{"firstName":"John","lastName":"Doe","age":30}]}
-                """.strip());
+        byte[] input = json("{\"data\":[{\"firstName\":\"John\",\"lastName\":\"Doe\",\"age\":30}]}");
 
         Result r = run(personValidator(), input);
 
@@ -125,9 +135,7 @@ class MessageValidatorFunctionTest {
      */
     @Test
     void arrayItemMissingRequiredField_routedToDlq() throws Exception {
-        byte[] input = json("""
-                {"persons":[{"firstName":"John","age":30}]}
-                """.strip());
+        byte[] input = json("{\"persons\":[{\"firstName\":\"John\",\"age\":30}]}");
 
         Result r = run(personValidator(), input);
 
@@ -153,13 +161,10 @@ class MessageValidatorFunctionTest {
     @Test
     void lastArrayItemMissingField_correctIndexReportedInDlq() throws Exception {
         // First two persons are valid; the third is missing "age"
-        byte[] input = json("""
-                {"persons":[
-                  {"firstName":"John","lastName":"Doe","age":30},
-                  {"firstName":"Jane","lastName":"Smith","age":28},
-                  {"firstName":"Bob","lastName":"Jones"}
-                ]}
-                """.strip());
+        byte[] input = json("{\"persons\":["
+                + "{\"firstName\":\"John\",\"lastName\":\"Doe\",\"age\":30},"
+                + "{\"firstName\":\"Jane\",\"lastName\":\"Smith\",\"age\":28},"
+                + "{\"firstName\":\"Bob\",\"lastName\":\"Jones\"}]}");
 
         Result r = run(personValidator(), input);
 
@@ -172,13 +177,10 @@ class MessageValidatorFunctionTest {
     @Test
     void multipleItemsMissingFields_allViolationsCollectedInSingleDlqRecord() throws Exception {
         // Every person is missing "age"
-        byte[] input = json("""
-                {"persons":[
-                  {"firstName":"Alice","lastName":"A"},
-                  {"firstName":"Bob",  "lastName":"B"},
-                  {"firstName":"Carol","lastName":"C"}
-                ]}
-                """.strip());
+        byte[] input = json("{\"persons\":["
+                + "{\"firstName\":\"Alice\",\"lastName\":\"A\"},"
+                + "{\"firstName\":\"Bob\",\"lastName\":\"B\"},"
+                + "{\"firstName\":\"Carol\",\"lastName\":\"C\"}]}");
 
         Result r = run(personValidator(), input);
 
@@ -197,9 +199,7 @@ class MessageValidatorFunctionTest {
 
     @Test
     void validMessage_allFieldsPresent_passesThroughUnchanged() throws Exception {
-        byte[] input = json("""
-                {"persons":[{"firstName":"John","lastName":"Doe","age":30}]}
-                """.strip());
+        byte[] input = json("{\"persons\":[{\"firstName\":\"John\",\"lastName\":\"Doe\",\"age\":30}]}");
 
         Result r = run(personValidator(), input);
 
@@ -211,12 +211,9 @@ class MessageValidatorFunctionTest {
 
     @Test
     void validMessage_multiplePersonsAllPresent_passesThrough() throws Exception {
-        byte[] input = json("""
-                {"persons":[
-                  {"firstName":"John","lastName":"Doe","age":30},
-                  {"firstName":"Jane","lastName":"Smith","age":28}
-                ]}
-                """.strip());
+        byte[] input = json("{\"persons\":["
+                + "{\"firstName\":\"John\",\"lastName\":\"Doe\",\"age\":30},"
+                + "{\"firstName\":\"Jane\",\"lastName\":\"Smith\",\"age\":28}]}");
 
         Result r = run(personValidator(), input);
 

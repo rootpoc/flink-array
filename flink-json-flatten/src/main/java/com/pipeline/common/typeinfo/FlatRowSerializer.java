@@ -119,27 +119,27 @@ public final class FlatRowSerializer extends TypeSerializer<Row> {
     private static void writeTypedValue(Object value, DataOutputView out) throws IOException {
         if (value == null) {
             out.writeByte(TAG_NULL);
-        } else if (value instanceof String str) {
+        } else if (value instanceof String) {
             out.writeByte(TAG_STRING);
-            out.writeUTF(str);
-        } else if (value instanceof Integer i) {
+            out.writeUTF((String) value);
+        } else if (value instanceof Integer) {
             out.writeByte(TAG_INTEGER);
-            out.writeInt(i);
-        } else if (value instanceof Long l) {
+            out.writeInt((Integer) value);
+        } else if (value instanceof Long) {
             out.writeByte(TAG_LONG);
-            out.writeLong(l);
-        } else if (value instanceof Double d) {
+            out.writeLong((Long) value);
+        } else if (value instanceof Double) {
             out.writeByte(TAG_DOUBLE);
-            out.writeDouble(d);
-        } else if (value instanceof Float f) {
+            out.writeDouble((Double) value);
+        } else if (value instanceof Float) {
             out.writeByte(TAG_FLOAT);
-            out.writeFloat(f);
-        } else if (value instanceof Boolean b) {
+            out.writeFloat((Float) value);
+        } else if (value instanceof Boolean) {
             out.writeByte(TAG_BOOLEAN);
-            out.writeBoolean(b);
-        } else if (value instanceof BigDecimal bd) {
+            out.writeBoolean((Boolean) value);
+        } else if (value instanceof BigDecimal) {
             out.writeByte(TAG_BIGDEC);
-            out.writeUTF(bd.toPlainString());
+            out.writeUTF(((BigDecimal) value).toPlainString());
         } else {
             // Graceful fallback: no data loss
             out.writeByte(TAG_STRING);
@@ -170,19 +170,28 @@ public final class FlatRowSerializer extends TypeSerializer<Row> {
 
     private static Object readTypedValue(DataInputView in) throws IOException {
         byte tag = in.readByte();
-        return switch (tag) {
-            case TAG_NULL    -> null;
-            case TAG_STRING  -> in.readUTF();
-            case TAG_INTEGER -> in.readInt();
-            case TAG_LONG    -> in.readLong();
-            case TAG_DOUBLE  -> in.readDouble();
-            case TAG_FLOAT   -> in.readFloat();
-            case TAG_BOOLEAN -> in.readBoolean();
-            case TAG_BIGDEC  -> new BigDecimal(in.readUTF());
-            default -> throw new IOException(
-                    "FlatRowSerializer: unknown type tag [" + tag + "]. "
-                    + "Data may have been written by a newer serializer version.");
-        };
+        switch (tag) {
+            case TAG_NULL:
+                return null;
+            case TAG_STRING:
+                return in.readUTF();
+            case TAG_INTEGER:
+                return in.readInt();
+            case TAG_LONG:
+                return in.readLong();
+            case TAG_DOUBLE:
+                return in.readDouble();
+            case TAG_FLOAT:
+                return in.readFloat();
+            case TAG_BOOLEAN:
+                return in.readBoolean();
+            case TAG_BIGDEC:
+                return new BigDecimal(in.readUTF());
+            default:
+                throw new IOException(
+                        "FlatRowSerializer: unknown type tag [" + tag + "]. "
+                                + "Data may have been written by a newer serializer version.");
+        }
     }
 
     // ── Bulk copy (source → target without intermediate object) ───────────────
@@ -201,15 +210,31 @@ public final class FlatRowSerializer extends TypeSerializer<Row> {
             target.writeByte(tag);
 
             switch (tag) {
-                case TAG_NULL    -> {}
-                case TAG_STRING  -> target.writeUTF(source.readUTF());
-                case TAG_INTEGER -> target.writeInt(source.readInt());
-                case TAG_LONG    -> target.writeLong(source.readLong());
-                case TAG_DOUBLE  -> target.writeDouble(source.readDouble());
-                case TAG_FLOAT   -> target.writeFloat(source.readFloat());
-                case TAG_BOOLEAN -> target.writeBoolean(source.readBoolean());
-                case TAG_BIGDEC  -> target.writeUTF(source.readUTF());
-                default          -> throw new IOException("Unknown type tag: " + tag);
+                case TAG_NULL:
+                    break;
+                case TAG_STRING:
+                    target.writeUTF(source.readUTF());
+                    break;
+                case TAG_INTEGER:
+                    target.writeInt(source.readInt());
+                    break;
+                case TAG_LONG:
+                    target.writeLong(source.readLong());
+                    break;
+                case TAG_DOUBLE:
+                    target.writeDouble(source.readDouble());
+                    break;
+                case TAG_FLOAT:
+                    target.writeFloat(source.readFloat());
+                    break;
+                case TAG_BOOLEAN:
+                    target.writeBoolean(source.readBoolean());
+                    break;
+                case TAG_BIGDEC:
+                    target.writeUTF(source.readUTF());
+                    break;
+                default:
+                    throw new IOException("Unknown type tag: " + tag);
             }
         }
     }

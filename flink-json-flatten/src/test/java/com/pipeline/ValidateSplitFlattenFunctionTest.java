@@ -19,6 +19,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Queue;
+import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -60,17 +61,14 @@ class ValidateSplitFlattenFunctionTest {
     }
 
     /** Single engine with an {@code imdb} nested object. */
-    private static final String NETFLIX_WITH_IMDB = """
-            {
-              "application": {"name":"Netflix","app_id":"id","version":"v1"},
-              "search_engines": [{
-                "category":"Movies","name":"IMDB",
-                "list":["url0","url1"],"pinned":true,"last_used":100,
-                "imdb":{"id":"tt1","title":"Film","year":"2020","rated":"PG",
-                        "genre":"Action","director":"Jane Doe","actors":"Actor A",
-                        "imdb_rating":7.5}
-              }]
-            }""";
+    private static final String NETFLIX_WITH_IMDB = "{"
+            + "\"application\":{\"name\":\"Netflix\",\"app_id\":\"id\",\"version\":\"v1\"},"
+            + "\"search_engines\":[{"
+            + "\"category\":\"Movies\",\"name\":\"IMDB\","
+            + "\"list\":[\"url0\",\"url1\"],\"pinned\":true,\"last_used\":100,"
+            + "\"imdb\":{\"id\":\"tt1\",\"title\":\"Film\",\"year\":\"2020\",\"rated\":\"PG\","
+            + "\"genre\":\"Action\",\"director\":\"Jane Doe\",\"actors\":\"Actor A\","
+            + "\"imdb_rating\":7.5}}]}";
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -94,7 +92,7 @@ class ValidateSplitFlattenFunctionTest {
         harness.open();
         harness.processElement(ProcessedMessage.ofValue(input), System.currentTimeMillis());
         List<Row> rows = harness.<ProcessedMessage>extractOutputValues()
-                .stream().map(ProcessedMessage::getPayload).toList();
+                .stream().map(ProcessedMessage::getPayload).collect(Collectors.toList());
 
         Queue<?> rawDlq = harness.getSideOutput(ValidateSplitFlattenFunction.DLQ_TAG);
         List<DlqRecord> dlq = new ArrayList<>();
@@ -114,7 +112,19 @@ class ValidateSplitFlattenFunctionTest {
         return run(NETFLIX_INPUT_SCHEMA, NETFLIX_OUTPUT_SCHEMA, pageSize, NullHandling.INCLUDE, input);
     }
 
-    private record Result(List<Row> rows, List<DlqRecord> dlq) {}
+    private static final class Result {
+        private final List<Row> rows;
+        private final List<DlqRecord> dlq;
+
+        private Result(List<Row> rows, List<DlqRecord> dlq) {
+            this.rows = rows;
+            this.dlq = dlq;
+        }
+
+        List<Row> rows() { return rows; }
+
+        List<DlqRecord> dlq() { return dlq; }
+    }
 
     // ══════════════════════════════════════════════════════════════════════════
     // InputSchemaAnalyzer
@@ -351,10 +361,9 @@ class ValidateSplitFlattenFunctionTest {
 
     @Test
     void nullHandling_include_nullKeptInRow() throws Exception {
-        String json = """
-                {"application":{"name":"N","app_id":"id","version":"v1"},
-                 "search_engines":[{"category":"C","name":"E",
-                   "list":["u"],"pinned":true,"last_used":0,"extra":null}]}""";
+        String json = "{\"application\":{\"name\":\"N\",\"app_id\":\"id\",\"version\":\"v1\"},"
+                + "\"search_engines\":[{\"category\":\"C\",\"name\":\"E\","
+                + "\"list\":[\"u\"],\"pinned\":true,\"last_used\":0,\"extra\":null}] }";
         Result r = run(NETFLIX_INPUT_SCHEMA, NETFLIX_OUTPUT_SCHEMA, 10, NullHandling.INCLUDE,
                 json.getBytes(StandardCharsets.UTF_8));
         Row row = r.rows().get(0);
@@ -364,10 +373,9 @@ class ValidateSplitFlattenFunctionTest {
 
     @Test
     void nullHandling_exclude_nullFieldOmitted() throws Exception {
-        String json = """
-                {"application":{"name":"N","app_id":"id","version":"v1"},
-                 "search_engines":[{"category":"C","name":"E",
-                   "list":["u"],"pinned":true,"last_used":0,"extra":null}]}""";
+        String json = "{\"application\":{\"name\":\"N\",\"app_id\":\"id\",\"version\":\"v1\"},"
+                + "\"search_engines\":[{\"category\":\"C\",\"name\":\"E\","
+                + "\"list\":[\"u\"],\"pinned\":true,\"last_used\":0,\"extra\":null}] }";
         Result r = run(NETFLIX_INPUT_SCHEMA, NETFLIX_OUTPUT_SCHEMA, 10, NullHandling.EXCLUDE,
                 json.getBytes(StandardCharsets.UTF_8));
         Row row = r.rows().get(0);
@@ -378,10 +386,9 @@ class ValidateSplitFlattenFunctionTest {
 
     @Test
     void nullHandling_replaceEmptyString_nullBecomesEmpty() throws Exception {
-        String json = """
-                {"application":{"name":"N","app_id":"id","version":"v1"},
-                 "search_engines":[{"category":"C","name":"E",
-                   "list":["u"],"pinned":true,"last_used":0,"extra":null}]}""";
+        String json = "{\"application\":{\"name\":\"N\",\"app_id\":\"id\",\"version\":\"v1\"},"
+                + "\"search_engines\":[{\"category\":\"C\",\"name\":\"E\","
+                + "\"list\":[\"u\"],\"pinned\":true,\"last_used\":0,\"extra\":null}] }";
         Result r = run(NETFLIX_INPUT_SCHEMA, NETFLIX_OUTPUT_SCHEMA, 10,
                 NullHandling.REPLACE_EMPTY_STRING,
                 json.getBytes(StandardCharsets.UTF_8));

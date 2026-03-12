@@ -206,14 +206,14 @@ public final class ReconstructSerializer
     }
 
     private static JsonNode toJsonNode(Object value, ObjectMapper mapper) {
-        if (value == null)                return mapper.nullNode();
-        if (value instanceof String s)    return mapper.getNodeFactory().textNode(s);
-        if (value instanceof Boolean b)   return mapper.getNodeFactory().booleanNode(b);
-        if (value instanceof Integer i)   return mapper.getNodeFactory().numberNode(i);
-        if (value instanceof Long l)      return mapper.getNodeFactory().numberNode(l);
-        if (value instanceof Double d)    return mapper.getNodeFactory().numberNode(d);
-        if (value instanceof Float f)     return mapper.getNodeFactory().numberNode(f);
-        if (value instanceof BigDecimal b) return mapper.getNodeFactory().numberNode(b);
+        if (value == null) return mapper.nullNode();
+        if (value instanceof String) return mapper.getNodeFactory().textNode((String) value);
+        if (value instanceof Boolean) return mapper.getNodeFactory().booleanNode((Boolean) value);
+        if (value instanceof Integer) return mapper.getNodeFactory().numberNode((Integer) value);
+        if (value instanceof Long) return mapper.getNodeFactory().numberNode((Long) value);
+        if (value instanceof Double) return mapper.getNodeFactory().numberNode((Double) value);
+        if (value instanceof Float) return mapper.getNodeFactory().numberNode((Float) value);
+        if (value instanceof BigDecimal) return mapper.getNodeFactory().numberNode((BigDecimal) value);
         return mapper.getNodeFactory().textNode(value.toString());
     }
 

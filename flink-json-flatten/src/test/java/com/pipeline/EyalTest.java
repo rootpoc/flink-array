@@ -21,6 +21,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -48,19 +49,16 @@ class EyalTest {
 
     // ── Input message — valid person matching input-person.schema.json ─────────
 
-    private static final String PERSON_JSON = """
-            {
-              "firstName": "John",
-              "lastName":  "Doe",
-              "age":       30,
-              "address": {
-                "street":     "123 Main St",
-                "city":       "Springfield",
-                "state":      "IL",
-                "postalCode": "62701",
-                "country":    "US"
-              }
-            }""";
+    private static final String PERSON_JSON = "{"
+            + "\"firstName\":\"John\","
+            + "\"lastName\":\"Doe\","
+            + "\"age\":30,"
+            + "\"address\":{"
+            + "\"street\":\"123 Main St\","
+            + "\"city\":\"Springfield\","
+            + "\"state\":\"IL\","
+            + "\"postalCode\":\"62701\","
+            + "\"country\":\"US\"}}";
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -91,7 +89,7 @@ class EyalTest {
         harness.open();
         harness.processElement(ProcessedMessage.ofValue(bytes), System.currentTimeMillis());
         List<Row> rows = harness.<ProcessedMessage>extractOutputValues()
-                .stream().map(ProcessedMessage::getPayload).toList();
+                .stream().map(ProcessedMessage::getPayload).collect(Collectors.toList());
         harness.close();
         assertEquals(1, rows.size(), "expected exactly one Row from the function");
         return rows.get(0);
@@ -173,11 +171,9 @@ class EyalTest {
                 loadSchema("schemas/input-person.schema.json"));
 
         // ── 2. Message with firstName omitted ──────────────────────────────────
-        byte[] inputBytes = """
-                {
-                  "lastName": "Doe",
-                  "age":      30
-                }""".strip().getBytes(StandardCharsets.UTF_8);
+        byte[] inputBytes = ("{"
+                + "\"lastName\":\"Doe\","
+                + "\"age\":30}").getBytes(StandardCharsets.UTF_8);
 
         // ── 3. Run through ValidateSplitFlattenFunction ─────────────────────────
         ValidateSplitFlattenFunction fn = new ValidateSplitFlattenFunction(
@@ -233,7 +229,7 @@ class EyalTest {
 
         // ── 4. Verify 3 rows were emitted for the 3 valid persons ─────────────
         List<Row> rows = harness.<ProcessedMessage>extractOutputValues()
-                .stream().map(ProcessedMessage::getPayload).toList();
+                .stream().map(ProcessedMessage::getPayload).collect(Collectors.toList());
         assertEquals(3, rows.size(), "expected 3 rows for 3 valid persons");
 
         // Row 0 — John Doe (page index 0, total 4 pages, 1 item)
@@ -282,16 +278,14 @@ class EyalTest {
                 "address.street must appear in requiredFields: " + inputSchema.getRequiredFields());
 
         // ── 2. Message: firstName/lastName/age present, address present but street missing ─
-        byte[] inputBytes = """
-                {
-                  "firstName": "John",
-                  "lastName":  "Doe",
-                  "age":       30,
-                  "address": {
-                    "city":    "Springfield",
-                    "state":   "IL"
-                  }
-                }""".strip().getBytes(StandardCharsets.UTF_8);
+        byte[] inputBytes = ("{"
+                + "\"firstName\":\"John\","
+                + "\"lastName\":\"Doe\","
+                + "\"age\":30,"
+                + "\"address\":{"
+                + "\"city\":\"Springfield\","
+                + "\"state\":\"IL\"}}")
+                .getBytes(StandardCharsets.UTF_8);
 
         // ── 3. Run through ValidateSplitFlattenFunction ─────────────────────────
         ValidateSplitFlattenFunction fn = new ValidateSplitFlattenFunction(

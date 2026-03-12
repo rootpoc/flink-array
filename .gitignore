@@ -1,3 +1,5 @@
 /.claude/
 /.idea/
+/flink-json-flatten/.gradle/
+/flink-json-flatten/build/
 /flink-json-flatten/target/

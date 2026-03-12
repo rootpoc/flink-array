@@ -1,0 +1,89 @@
+plugins {
+    id 'java'
+    id 'com.github.johnrengelman.shadow' version '8.1.1'
+}
+
+group = 'com.pipeline'
+version = '1.0.0'
+
+def flinkVersion = '1.20.3'
+def flinkKafkaConnectorVersion = '3.3.0-1.20'
+def jacksonVersion = '2.17.2'
+def slf4jVersion = '1.7.36'
+def log4jVersion = '2.23.1'
+def junitVersion = '5.11.0'
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_11
+    targetCompatibility = JavaVersion.VERSION_11
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    // Flink core is provided by cluster/runtime
+    compileOnly "org.apache.flink:flink-streaming-java:${flinkVersion}"
+    compileOnly "org.apache.flink:flink-clients:${flinkVersion}"
+    compileOnly "org.apache.flink:flink-metrics-core:${flinkVersion}"
+
+    implementation "org.apache.flink:flink-connector-kafka:${flinkKafkaConnectorVersion}"
+    implementation "com.fasterxml.jackson.core:jackson-databind:${jacksonVersion}"
+    implementation "com.fasterxml.jackson.core:jackson-core:${jacksonVersion}"
+    implementation 'org.yaml:snakeyaml:2.2'
+
+    compileOnly "org.slf4j:slf4j-api:${slf4jVersion}"
+    runtimeOnly "org.apache.logging.log4j:log4j-slf4j-impl:${log4jVersion}"
+    runtimeOnly "org.apache.logging.log4j:log4j-core:${log4jVersion}"
+
+    testImplementation "org.junit.jupiter:junit-jupiter:${junitVersion}"
+    testImplementation "org.apache.flink:flink-test-utils:${flinkVersion}"
+
+    // Keep provided deps available in tests as Maven did via test classpath behavior
+    testImplementation "org.apache.flink:flink-streaming-java:${flinkVersion}"
+    testImplementation "org.apache.flink:flink-clients:${flinkVersion}"
+    testImplementation "org.apache.flink:flink-metrics-core:${flinkVersion}"
+    testImplementation "org.slf4j:slf4j-api:${slf4jVersion}"
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.release = 11
+}
+
+tasks.test {
+    useJUnitPlatform()
+    jvmArgs(
+            '--add-opens', 'java.base/java.util=ALL-UNNAMED',
+            '--add-opens', 'java.base/java.lang=ALL-UNNAMED',
+            '--add-opens', 'java.base/java.lang.reflect=ALL-UNNAMED',
+            '--add-opens', 'java.base/java.io=ALL-UNNAMED',
+            '--add-opens', 'java.rmi/sun.rmi.transport=ALL-UNNAMED'
+    )
+}
+
+tasks.jar {
+    archiveClassifier.set('')
+}
+
+tasks.shadowJar {
+    archiveClassifier.set('fat')
+    manifest {
+        attributes 'Main-Class': 'com.pipeline.JsonFlattenPipeline'
+    }
+    mergeServiceFiles()
+    append('reference.conf')
+
+    dependencies {
+        exclude(dependency('org.apache.flink:flink-streaming-java:.*'))
+        exclude(dependency('org.apache.flink:flink-clients:.*'))
+        exclude(dependency('org.apache.flink:flink-metrics-core:.*'))
+        exclude(dependency('org.slf4j:slf4j-api:.*'))
+    }
+}
+
+tasks.assemble {
+    dependsOn tasks.shadowJar
+}
+

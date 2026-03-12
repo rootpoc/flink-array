@@ -83,7 +83,19 @@ class ArraySplitterFunctionTest {
         return MAPPER.readTree(bytes);
     }
 
-    private record Result(List<byte[]> pages, List<DlqRecord> dlq) {}
+    private static final class Result {
+        private final List<byte[]> pages;
+        private final List<DlqRecord> dlq;
+
+        private Result(List<byte[]> pages, List<DlqRecord> dlq) {
+            this.pages = pages;
+            this.dlq = dlq;
+        }
+
+        List<byte[]> pages() { return pages; }
+
+        List<DlqRecord> dlq() { return dlq; }
+    }
 
     // ── Splitting tests ───────────────────────────────────────────────────────
 

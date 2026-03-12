@@ -45,130 +45,23 @@ class FlatteningDeserializerTest {
 
     // ── Persons JSON (full integration view) ─────────────────────────────────
 
-    static final String PERSONS_JSON = """
-            {
-              "count": 5,
-              "persons": [
-                {
-                  "firstName": "John",  "lastName": "Doe",     "age": 30,
-                  "address": { "street": "123 Main Street", "city": "New York",    "state": "NY", "postalCode": "10001", "country": "USA" }
-                },
-                {
-                  "firstName": "Jane",  "lastName": "Smith",   "age": 28,
-                  "address": { "street": "456 Oak Avenue",  "city": "Los Angeles", "state": "CA", "postalCode": "90210", "country": "USA" }
-                },
-                {
-                  "firstName": "Michael","lastName": "Johnson", "age": 35,
-                  "address": { "street": "789 Pine Road",   "city": "Chicago",     "state": "IL", "postalCode": "60601", "country": "USA" }
-                },
-                {
-                  "firstName": "Sarah", "lastName": "Wilson",  "age": 42,
-                  "address": { "street": "321 Elm Street",  "city": "Houston",     "state": "TX", "postalCode": "77001", "country": "USA" }
-                },
-                {
-                  "firstName": "David", "lastName": "Brown",   "age": 27,
-                  "address": { "street": "654 Cedar Lane",  "city": "Miami",       "state": "FL", "postalCode": "33101", "country": "USA" }
-                }
-              ]
-            }
-            """;
+    static final String PERSONS_JSON = "{"
+            + "\"count\":5,"
+            + "\"persons\":["
+            + "{\"firstName\":\"John\",\"lastName\":\"Doe\",\"age\":30,\"address\":{\"street\":\"123 Main Street\",\"city\":\"New York\",\"state\":\"NY\",\"postalCode\":\"10001\",\"country\":\"USA\"}},"
+            + "{\"firstName\":\"Jane\",\"lastName\":\"Smith\",\"age\":28,\"address\":{\"street\":\"456 Oak Avenue\",\"city\":\"Los Angeles\",\"state\":\"CA\",\"postalCode\":\"90210\",\"country\":\"USA\"}},"
+            + "{\"firstName\":\"Michael\",\"lastName\":\"Johnson\",\"age\":35,\"address\":{\"street\":\"789 Pine Road\",\"city\":\"Chicago\",\"state\":\"IL\",\"postalCode\":\"60601\",\"country\":\"USA\"}},"
+            + "{\"firstName\":\"Sarah\",\"lastName\":\"Wilson\",\"age\":42,\"address\":{\"street\":\"321 Elm Street\",\"city\":\"Houston\",\"state\":\"TX\",\"postalCode\":\"77001\",\"country\":\"USA\"}},"
+            + "{\"firstName\":\"David\",\"lastName\":\"Brown\",\"age\":27,\"address\":{\"street\":\"654 Cedar Lane\",\"city\":\"Miami\",\"state\":\"FL\",\"postalCode\":\"33101\",\"country\":\"USA\"}}]}";
 
-    static final String NETFLIX_JSON = """
-            {
-              "application": {
-                "name": "Netflix Categories",
-                "app_id": "netflix-categories@deekshith.in",
-                "version": "v0.1"
-              },
-              "search_engines": [
-                {
-                  "category": "NetflixCategories",
-                  "name": "Action & Adventure",
-                  "list": [
-                    "http://www.netflix.com/browse/genre/1365",
-                    "https://www.netflix.com/title/genre/1365"
-                  ],
-                  "pinned": true,
-                  "last_used": 0,
-                  "imdb": {
-                    "id": "tt8936646", "title": "Extraction", "year": "2020",
-                    "rated": "R", "genre": "Action, Thriller",
-                    "director": "Sam Hargrave",
-                    "actors": "Chris Hemsworth, Rudhraksh Jaiswal",
-                    "imdb_rating": 6.8
-                  }
-                },
-                {
-                  "category": "NetflixCategories",
-                  "name": "Action Comedies",
-                  "list": [
-                    "http://www.netflix.com/browse/genre/43040",
-                    "https://www.netflix.com/browse/genre/43040?region=il"
-                  ],
-                  "pinned": false,
-                  "last_used": 0,
-                  "imdb": {
-                    "id": "tt4158476", "title": "Deadpool 2", "year": "2018",
-                    "rated": "R", "genre": "Action, Adventure, Comedy",
-                    "director": "David Leitch",
-                    "actors": "Ryan Reynolds, Josh Brolin",
-                    "imdb_rating": 7.6
-                  }
-                },
-                {
-                  "category": "NetflixCategories",
-                  "name": "Action Sci-Fi & Fantasy",
-                  "list": [
-                    "http://www.netflix.com/browse/genre/1568",
-                    "https://www.netflix.com/genre/1568"
-                  ],
-                  "pinned": false,
-                  "last_used": 0,
-                  "imdb": {
-                    "id": "tt1392190", "title": "Mad Max: Fury Road", "year": "2015",
-                    "rated": "R", "genre": "Action, Adventure, Sci-Fi",
-                    "director": "George Miller",
-                    "actors": "Charlize Theron, Tom Hardy",
-                    "imdb_rating": 8.1
-                  }
-                },
-                {
-                  "category": "NetflixCategories",
-                  "name": "Horror Movies",
-                  "list": [
-                    "http://www.netflix.com/browse/genre/8711",
-                    "https://www.netflix.com/title/genre/8711"
-                  ],
-                  "pinned": false,
-                  "last_used": 0,
-                  "imdb": {
-                    "id": "tt0365748", "title": "The Descent", "year": "2005",
-                    "rated": "R", "genre": "Adventure, Horror",
-                    "director": "Neil Marshall",
-                    "actors": "Shauna Macdonald, Natalie Mendoza",
-                    "imdb_rating": 7.2
-                  }
-                },
-                {
-                  "category": "NetflixCategories",
-                  "name": "Anime Series",
-                  "list": [
-                    "http://www.netflix.com/browse/genre/7424",
-                    "https://www.netflix.com/browse/genre/7424"
-                  ],
-                  "pinned": true,
-                  "last_used": 12,
-                  "imdb": {
-                    "id": "tt14947990", "title": "Cyberpunk: Edgerunners", "year": "2022",
-                    "rated": "TV-MA", "genre": "Animation, Action, Sci-Fi",
-                    "director": "Ibon Cormenzana",
-                    "actors": "Zach Aguilar, Emi Lo",
-                    "imdb_rating": 8.3
-                  }
-                }
-              ]
-            }
-            """;
+    static final String NETFLIX_JSON = "{"
+            + "\"application\":{\"name\":\"Netflix Categories\",\"app_id\":\"netflix-categories@deekshith.in\",\"version\":\"v0.1\"},"
+            + "\"search_engines\":["
+            + "{\"category\":\"NetflixCategories\",\"name\":\"Action & Adventure\",\"list\":[\"http://www.netflix.com/browse/genre/1365\",\"https://www.netflix.com/title/genre/1365\"],\"pinned\":true,\"last_used\":0,\"imdb\":{\"id\":\"tt8936646\",\"title\":\"Extraction\",\"year\":\"2020\",\"rated\":\"R\",\"genre\":\"Action, Thriller\",\"director\":\"Sam Hargrave\",\"actors\":\"Chris Hemsworth, Rudhraksh Jaiswal\",\"imdb_rating\":6.8}},"
+            + "{\"category\":\"NetflixCategories\",\"name\":\"Action Comedies\",\"list\":[\"http://www.netflix.com/browse/genre/43040\",\"https://www.netflix.com/browse/genre/43040?region=il\"],\"pinned\":false,\"last_used\":0,\"imdb\":{\"id\":\"tt4158476\",\"title\":\"Deadpool 2\",\"year\":\"2018\",\"rated\":\"R\",\"genre\":\"Action, Adventure, Comedy\",\"director\":\"David Leitch\",\"actors\":\"Ryan Reynolds, Josh Brolin\",\"imdb_rating\":7.6}},"
+            + "{\"category\":\"NetflixCategories\",\"name\":\"Action Sci-Fi & Fantasy\",\"list\":[\"http://www.netflix.com/browse/genre/1568\",\"https://www.netflix.com/genre/1568\"],\"pinned\":false,\"last_used\":0,\"imdb\":{\"id\":\"tt1392190\",\"title\":\"Mad Max: Fury Road\",\"year\":\"2015\",\"rated\":\"R\",\"genre\":\"Action, Adventure, Sci-Fi\",\"director\":\"George Miller\",\"actors\":\"Charlize Theron, Tom Hardy\",\"imdb_rating\":8.1}},"
+            + "{\"category\":\"NetflixCategories\",\"name\":\"Horror Movies\",\"list\":[\"http://www.netflix.com/browse/genre/8711\",\"https://www.netflix.com/title/genre/8711\"],\"pinned\":false,\"last_used\":0,\"imdb\":{\"id\":\"tt0365748\",\"title\":\"The Descent\",\"year\":\"2005\",\"rated\":\"R\",\"genre\":\"Adventure, Horror\",\"director\":\"Neil Marshall\",\"actors\":\"Shauna Macdonald, Natalie Mendoza\",\"imdb_rating\":7.2}},"
+            + "{\"category\":\"NetflixCategories\",\"name\":\"Anime Series\",\"list\":[\"http://www.netflix.com/browse/genre/7424\",\"https://www.netflix.com/browse/genre/7424\"],\"pinned\":true,\"last_used\":12,\"imdb\":{\"id\":\"tt14947990\",\"title\":\"Cyberpunk: Edgerunners\",\"year\":\"2022\",\"rated\":\"TV-MA\",\"genre\":\"Animation, Action, Sci-Fi\",\"director\":\"Ibon Cormenzana\",\"actors\":\"Zach Aguilar, Emi Lo\",\"imdb_rating\":8.3}}]}";
 
     static final byte[] NETFLIX_BYTES = NETFLIX_JSON.strip().getBytes(StandardCharsets.UTF_8);
 
@@ -243,9 +136,7 @@ class FlatteningDeserializerTest {
 
     @Test
     void flatObject_singleLevel() throws Exception {
-        Row row = flatten("""
-                {"name":"alice","age":30,"active":true}
-                """);
+        Row row = flatten("{\"name\":\"alice\",\"age\":30,\"active\":true}");
 
         assertEquals("alice", row.getField("name"));
         assertEquals(30L,      row.getField("age"));
@@ -256,9 +147,7 @@ class FlatteningDeserializerTest {
 
     @Test
     void nestedObject_dotNotation() throws Exception {
-        Row row = flatten("""
-                {"person":{"name":"alice","address":{"city":"London"}}}
-                """);
+        Row row = flatten("{\"person\":{\"name\":\"alice\",\"address\":{\"city\":\"London\"}}}");
 
         assertEquals("alice",  row.getField("person.name"));
         assertEquals("London", row.getField("person.address.city"));
@@ -270,9 +159,7 @@ class FlatteningDeserializerTest {
 
     @Test
     void arrayInObject_producesIndexedKeys() throws Exception {
-        Row row = flatten("""
-                {"person":{"details":[{"street":"A"},{"street":"B"}]}}
-                """);
+        Row row = flatten("{\"person\":{\"details\":[{\"street\":\"A\"},{\"street\":\"B\"}]}}");
 
         assertEquals("A", row.getField("person.details.0.street"));
         assertEquals("B", row.getField("person.details.1.street"));
@@ -325,9 +212,7 @@ class FlatteningDeserializerTest {
 
     @Test
     void numericTypes_preservedCorrectly() throws Exception {
-        Row row = flatten("""
-                {"intVal":42,"longVal":9999999999,"doubleVal":3.14,"boolVal":false}
-                """);
+        Row row = flatten("{\"intVal\":42,\"longVal\":9999999999,\"doubleVal\":3.14,\"boolVal\":false}");
 
         assertEquals(42L,           row.getField("intVal"));
         assertEquals(9999999999L,  row.getField("longVal"));
@@ -339,9 +224,7 @@ class FlatteningDeserializerTest {
 
     @Test
     void nullValue_includedByDefault() throws Exception {
-        Row row = flatten("""
-                {"name":null}
-                """);
+        Row row = flatten("{\"name\":null}");
 
         assertTrue(fieldNames(row).contains("name"));
         assertNull(row.getField("name"));
@@ -353,9 +236,7 @@ class FlatteningDeserializerTest {
                 new PipelineConfig.Builder()
                         .nullHandling(PipelineConfig.NullHandling.EXCLUDE)
                         .build());
-        Row row = flatten(d, """
-                {"name":null,"city":"London"}
-                """);
+        Row row = flatten(d, "{\"name\":null,\"city\":\"London\"}");
 
         assertFalse(fieldNames(row).contains("name"));
         assertEquals("London", row.getField("city"));
@@ -367,9 +248,7 @@ class FlatteningDeserializerTest {
                 new PipelineConfig.Builder()
                         .nullHandling(PipelineConfig.NullHandling.REPLACE_EMPTY_STRING)
                         .build());
-        Row row = flatten(d, """
-                {"name":null}
-                """);
+        Row row = flatten(d, "{\"name\":null}");
 
         assertEquals("", row.getField("name"));
     }
@@ -398,9 +277,7 @@ class FlatteningDeserializerTest {
 
     @Test
     void output_isNamedRow_notPositional() throws Exception {
-        Row row = flatten("""
-                {"x":1}
-                """);
+        Row row = flatten("{\"x\":1}");
 
         assertNotNull(row.getFieldNames(false),
                 "getFieldNames(false) must return non-null for a named Row");
@@ -416,9 +293,7 @@ class FlatteningDeserializerTest {
      */
     @Test
     void roundTrip_nestedObjectWithArray_structurallyEqual() throws Exception {
-        String input = """
-                {"person":{"name":"alice","tags":["java","flink"],"address":{"city":"London","zip":"EC1A"}}}
-                """;
+        String input = "{\"person\":{\"name\":\"alice\",\"tags\":[\"java\",\"flink\"],\"address\":{\"city\":\"London\",\"zip\":\"EC1A\"}}}";
 
         Row row = flatten(input);
 
@@ -483,5 +358,17 @@ class FlatteningDeserializerTest {
         return names != null ? names : Set.of();
     }
 
-    private record Result(List<Row> rows, List<DlqRecord> dlq) {}
+    private static final class Result {
+        private final List<Row> rows;
+        private final List<DlqRecord> dlq;
+
+        private Result(List<Row> rows, List<DlqRecord> dlq) {
+            this.rows = rows;
+            this.dlq = dlq;
+        }
+
+        List<Row> rows() { return rows; }
+
+        List<DlqRecord> dlq() { return dlq; }
+    }
 }
