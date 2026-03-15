@@ -91,11 +91,9 @@ public final class ValidateFlattenFunction
         }
 
         try {
-            // Step 1 — parse once
             JsonNode root = mapperLocal.get().readTree(bytes);
 
-            // Step 2 — validate required fields
-            List<String> violations = validate(root);
+            List<String> violations = validate(root, inputSchema);
             if (!violations.isEmpty()) {
                 LOG.warn("Input validation failed ({} bytes): {}", bytes.length, violations);
                 ctx.output(DLQ_TAG, DlqRecord.of(msg,
@@ -103,9 +101,8 @@ public final class ValidateFlattenFunction
                 return;
             }
 
-            // Step 3 — flatten the entire JSON tree into one Row (all arrays kept intact)
             Row row = Row.withNames();
-            flattenInto(root, "", row);
+            flattenInto(root, "", row, nullHandling);
             out.collect(msg.withPayload(row));
 
         } catch (Exception e) {
@@ -116,7 +113,7 @@ public final class ValidateFlattenFunction
 
     // ── Validation ────────────────────────────────────────────────────────────
 
-    List<String> validate(JsonNode root) {
+    static List<String> validate(JsonNode root, InputSchemaInfo inputSchema) {
         List<String> violations = new ArrayList<>();
         for (String path : inputSchema.getRequiredFields()) {
             if (isMissingRequired(root, path)) {
@@ -126,7 +123,7 @@ public final class ValidateFlattenFunction
         return violations;
     }
 
-    private static boolean isMissingRequired(JsonNode node, String dotPath) {
+    static boolean isMissingRequired(JsonNode node, String dotPath) {
         String[] parts = dotPath.split("\\.");
         JsonNode current = node;
         for (int i = 0; i < parts.length - 1; i++) {
@@ -138,7 +135,7 @@ public final class ValidateFlattenFunction
 
     // ── Iterative flattener ───────────────────────────────────────────────────
 
-    private void flattenInto(JsonNode node, String prefix, Row row) {
+    static void flattenInto(JsonNode node, String prefix, Row row, NullHandling nullHandling) {
         Deque<Object[]> stack = new ArrayDeque<>(32);
         stack.push(new Object[]{prefix, node});
 
@@ -176,7 +173,7 @@ public final class ValidateFlattenFunction
         }
     }
 
-    private static Object extractLeafValue(JsonNode node) {
+    static Object extractLeafValue(JsonNode node) {
         if (node.isNull() || node.isMissingNode()) return null;
         if (node.isIntegralNumber()) {
             long lv = node.longValue();
@@ -196,4 +193,3 @@ public final class ValidateFlattenFunction
         return ProcessedMessageTypeInfo.INSTANCE;
     }
 }
-

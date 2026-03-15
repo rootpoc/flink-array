@@ -17,24 +17,24 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * Flink operator that splits a fully-processed (validated, flattened, transformed)
+ * Flink operator that splits a fully-processed (ingested, transformed)
  * {@link ProcessedMessage} into one {@link ProcessedMessage} per page.
  *
- * <h2>Why split happens last</h2>
- * By running after {@code ValidateFlattenFunction} and {@code UpperCaseMapFunction},
+ * <h2>Why split happens after ingestion and transformation</h2>
+ * By running after the configured input stage and {@code UpperCaseMapFunction},
  * every page automatically inherits the already-transformed field values — no
  * re-processing is needed per page.
  *
  * <h2>Input Row structure</h2>
- * The incoming Row uses dot-notation keys for the full JSON tree, including
- * all array elements (e.g. {@code "search_engines.0.name"},
- * {@code "search_engines.1.imdb.director"}, ...).
+ * The incoming Row uses dot-notation keys for the full message tree, including
+ * all array elements (e.g. {@code "persons.0.firstName"},
+ * {@code "persons.1.address.city"}, ...).
  *
  * <h2>Output Row structure per page</h2>
  * Each emitted Row contains:
  * <ul>
  *   <li>Pagination metadata fields defined by {@link PaginationSchema}
- *       ({@code index}, {@code total}, {@code count}).</li>
+ *       (for example {@code metadata.page}, {@code metadata.totalCount}, {@code count}).</li>
  *   <li>Only the {@code splitField.N.*} keys for the items in this page,
  *       re-indexed from 0 within the page.</li>
  *   <li>All non-array-item fields from the original Row
@@ -45,7 +45,7 @@ import java.util.Set;
  * This operator is only added to the topology when
  * {@code processing.split-enabled=true} (see {@link com.pipeline.config.PipelineConfig}).
  * When split is disabled, records flow directly from {@code UpperCaseMapFunction}
- * to the sink.
+ * to the configured output serialization stage.
  */
 public final class SplitFunction
         extends RichFlatMapFunction<ProcessedMessage, ProcessedMessage>
@@ -66,7 +66,7 @@ public final class SplitFunction
     /**
      * @param outputSchema  field-name mapping for pagination metadata
      * @param pageSize      maximum number of array items per output page
-     * @param splitField    top-level array key to paginate (e.g. {@code "search_engines"})
+     * @param splitField    top-level array key to paginate (e.g. {@code "persons"})
      */
     public SplitFunction(PaginationSchema outputSchema, int pageSize, String splitField) {
         this.outputSchema = outputSchema;
@@ -150,15 +150,17 @@ public final class SplitFunction
 
             Row pageRow = Row.withNames();
 
-            // Pagination metadata
-            pageRow.setField(outputSchema.getIndexFieldName(), p);
-            pageRow.setField(outputSchema.getTotalFieldName(), totalPages);
-            pageRow.setField(outputSchema.getCountFieldName(), count);
-
-            // Copy shared (non-array-item) fields
+            // Copy shared (non-array-item) fields first. This preserves root metadata like
+            // metadata.timestamp / metadata.apiVersion on every page.
             for (String key : sharedKeys) {
                 pageRow.setField(key, row.getField(key));
             }
+
+            // Pagination metadata must be written after copying shared fields so these computed
+            // values win over any same-named values already present in the flattened input Row.
+            pageRow.setField(outputSchema.getIndexFieldName(), p);
+            pageRow.setField(outputSchema.getTotalFieldName(), totalPages);
+            pageRow.setField(outputSchema.getCountFieldName(), count);
 
             // Copy this page's array items, re-indexed from 0 within the page
             for (int i = start; i < end; i++) {
@@ -188,4 +190,3 @@ public final class SplitFunction
         return ProcessedMessageTypeInfo.INSTANCE;
     }
 }
-

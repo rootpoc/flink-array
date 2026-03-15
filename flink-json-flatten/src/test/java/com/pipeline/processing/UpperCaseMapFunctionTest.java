@@ -1,10 +1,11 @@
 package com.pipeline.processing;
 
-import com.pipeline.config.PipelineConfig;
+import com.pipeline.ValidateFlattenFunction;
 import com.pipeline.common.ProcessedMessage;
-import com.pipeline.deserialization.FlatteningDeserializer;
-import com.pipeline.common.typeinfo.FlatRowSerializer;
 import com.pipeline.common.typeinfo.ProcessedMessageSerializer;
+import com.pipeline.config.PipelineConfig;
+import com.pipeline.config.PipelineConfig.NullHandling;
+import com.pipeline.validation.InputSchemaInfo;
 import org.apache.flink.streaming.api.operators.ProcessOperator;
 import org.apache.flink.streaming.api.operators.StreamMap;
 import org.apache.flink.streaming.util.OneInputStreamOperatorTestHarness;
@@ -58,21 +59,22 @@ class UpperCaseMapFunctionTest {
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     /**
-     * Flatten a JSON string into a single {@link Row} via {@link FlatteningDeserializer}.
-     * The returned row is in named-field mode with dot-notation keys.
+     * Flatten a JSON string into a single named {@link Row} via the live
+     * {@link ValidateFlattenFunction} path.
      */
     private static Row flattenJson(String json) throws Exception {
         byte[] bytes = json.strip().getBytes(StandardCharsets.UTF_8);
-        var deserializer = new FlatteningDeserializer(new PipelineConfig.Builder().build());
-        var harness = new OneInputStreamOperatorTestHarness<>(
-                new ProcessOperator<>(deserializer));
-        harness.setup(FlatRowSerializer.INSTANCE);
+        ValidateFlattenFunction fn = new ValidateFlattenFunction(
+                new InputSchemaInfo(null, List.of(), List.of()),
+                NullHandling.INCLUDE);
+        var harness = new OneInputStreamOperatorTestHarness<>(new ProcessOperator<>(fn));
+        harness.setup(ProcessedMessageSerializer.INSTANCE);
         harness.open();
-        harness.processElement(bytes, System.currentTimeMillis());
-        List<Row> rows = harness.extractOutputValues();
+        harness.processElement(ProcessedMessage.ofValue(bytes), System.currentTimeMillis());
+        List<ProcessedMessage> rows = harness.extractOutputValues();
         harness.close();
         assertEquals(1, rows.size(), "expected a single flattened Row");
-        return rows.get(0);
+        return rows.get(0).getPayload();
     }
 
     /**

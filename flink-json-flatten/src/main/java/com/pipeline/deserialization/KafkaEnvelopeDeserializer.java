@@ -16,8 +16,8 @@ import java.util.Map;
  * {@link KafkaRecordDeserializationSchema} that captures the full Kafka record envelope
  * — key, value bytes, and headers — into a {@link ProcessedMessage} with a {@code null} payload.
  *
- * <p>Downstream, {@link com.pipeline.ValidateSplitFlattenFunction} fills in the payload
- * by calling {@link ProcessedMessage#withPayload(org.apache.flink.types.Row)}.
+ * <p>Downstream, the configured input {@code ProcessFunction} converts the raw value bytes into
+ * a {@link org.apache.flink.types.Row} payload while preserving the Kafka envelope.
  *
  * <p>When multiple Kafka headers share the same name, the last value wins
  * (consistent with {@link ProcessedMessage}'s Map semantics).

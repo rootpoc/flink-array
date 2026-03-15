@@ -8,6 +8,7 @@ import com.pipeline.common.ProcessedMessage;
 import com.pipeline.common.typeinfo.ProcessedMessageSerializer;
 import com.pipeline.validation.InputSchemaInfo;
 import org.apache.flink.streaming.api.operators.ProcessOperator;
+import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 import org.apache.flink.streaming.util.OneInputStreamOperatorTestHarness;
 import org.apache.flink.types.Row;
 import org.junit.jupiter.api.BeforeAll;
@@ -15,7 +16,9 @@ import org.junit.jupiter.api.Test;
 
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Queue;
 import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -34,7 +37,7 @@ import static org.junit.jupiter.api.Assertions.*;
  *       present (intersection yields no additional required fields).</li>
  * </ul>
  *
- * <p>Effective required paths extracted by {@link InputSchemaAnalyzer}:
+ * <p>Effective required paths extracted by {@link InputSchemaInfo#analyze(JsonNode)}:
  * {@code ["age", "address.street"]} — {@code address.street} is only enforced when
  * {@code address} is present (JSON Schema nested-required semantics).
  */
@@ -58,9 +61,6 @@ class AnyTest {
 
     @Test
     void schema_requiredFieldsAreAgeAndAddressStreet() {
-        // anyOf intersection: {firstName} ∩ {lastName} = {} → nothing added
-        // oneOf intersection inside address: {city} ∩ {state} = {} → nothing added
-        // direct required: age; address.required: street
         List<String> required = INPUT_SCHEMA.getRequiredFields();
         assertTrue(required.contains("age"),            "age must be required (root required array)");
         assertTrue(required.contains("address.street"), "address.street must be required (nested required)");
@@ -75,7 +75,6 @@ class AnyTest {
 
     @Test
     void john_firstNameAndAge_noAddress_validRow() throws Exception {
-        // firstName branch of anyOf, no address → address.street check skipped
         byte[] bytes = ("{"
                 + "\"firstName\":\"John\","
                 + "\"age\":30}").getBytes(StandardCharsets.UTF_8);
@@ -90,8 +89,6 @@ class AnyTest {
 
     @Test
     void emily_firstNameAgeAndAddress_validRow() throws Exception {
-        // firstName branch of anyOf, address present with street → passes nested required
-        // address.oneOf: city is present (matches oneOf branch 1)
         byte[] bytes = ("{"
                 + "\"firstName\":\"Emily\","
                 + "\"age\":19,"
@@ -111,7 +108,6 @@ class AnyTest {
 
     @Test
     void smith_lastNameAndAge_noAddress_validRow() throws Exception {
-        // lastName branch of anyOf, no address → address.street check skipped
         byte[] bytes = ("{"
                 + "\"lastName\":\"Smith\","
                 + "\"age\":22}").getBytes(StandardCharsets.UTF_8);
@@ -128,7 +124,6 @@ class AnyTest {
 
     @Test
     void missingAge_routedToDlq() throws Exception {
-        // age is required at root level — missing it always fails
         byte[] bytes = ("{"
                 + "\"firstName\":\"David\"}").getBytes(StandardCharsets.UTF_8);
 
@@ -139,7 +134,6 @@ class AnyTest {
 
     @Test
     void addressPresentButStreetMissing_routedToDlq() throws Exception {
-        // address.street is required when address is present — city alone is not enough
         byte[] bytes = ("{"
                 + "\"firstName\":\"Bob\","
                 + "\"age\":25,"
@@ -153,34 +147,37 @@ class AnyTest {
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    /** Runs bytes through {@link ValidateSplitFlattenFunction} and returns the single output Row. */
+    /** Runs bytes through {@link ValidateFlattenFunction} and returns the single output Row. */
     private static Row flatten(byte[] bytes) throws Exception {
         var harness = buildHarness();
         harness.processElement(ProcessedMessage.ofValue(bytes), System.currentTimeMillis());
-        List<Row> rows = harness.<ProcessedMessage>extractOutputValues()
+        List<Row> rows = harness.extractOutputValues()
                 .stream().map(ProcessedMessage::getPayload).collect(Collectors.toList());
         harness.close();
         assertEquals(1, rows.size(), "expected exactly one Row for a valid message");
-        assertNull(harness.getSideOutput(ValidateSplitFlattenFunction.DLQ_TAG));
         return rows.get(0);
     }
 
-    /** Runs bytes through {@link ValidateSplitFlattenFunction} and asserts exactly one DLQ record. */
+    /** Runs bytes through {@link ValidateFlattenFunction} and asserts exactly one DLQ record. */
     private static DlqRecord expectDlq(byte[] bytes) throws Exception {
         var harness = buildHarness();
         harness.processElement(ProcessedMessage.ofValue(bytes), System.currentTimeMillis());
         assertTrue(harness.extractOutputValues().isEmpty(),
                 "no Row must be emitted for an invalid message");
-        var dlqRecords = harness.getSideOutput(ValidateSplitFlattenFunction.DLQ_TAG);
+
+        Queue<?> rawDlq = harness.getSideOutput(ValidateFlattenFunction.DLQ_TAG);
         harness.close();
-        assertEquals(1, dlqRecords.size(), "expected exactly one DLQ record");
-        return dlqRecords.iterator().next().getValue();
+        assertNotNull(rawDlq, "expected DLQ side output");
+        assertEquals(1, rawDlq.size(), "expected exactly one DLQ record");
+
+        List<DlqRecord> dlq = new ArrayList<>();
+        rawDlq.forEach(sr -> dlq.add((DlqRecord) ((StreamRecord<?>) sr).getValue()));
+        return dlq.get(0);
     }
 
     private static OneInputStreamOperatorTestHarness<ProcessedMessage, ProcessedMessage> buildHarness()
             throws Exception {
-        ValidateSplitFlattenFunction fn = new ValidateSplitFlattenFunction(
-                INPUT_SCHEMA, null, 100, NullHandling.INCLUDE);
+        ValidateFlattenFunction fn = new ValidateFlattenFunction(INPUT_SCHEMA, NullHandling.INCLUDE);
         var harness = new OneInputStreamOperatorTestHarness<>(new ProcessOperator<>(fn));
         harness.setup(ProcessedMessageSerializer.INSTANCE);
         harness.open();

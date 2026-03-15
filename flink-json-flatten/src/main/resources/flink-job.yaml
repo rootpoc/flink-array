@@ -35,6 +35,21 @@ checkpoint.unaligned:    true    # reduces checkpoint latency under backpressure
 #   s3://bucket/path            — for S3 (requires flink-s3-fs-hadoop plugin)
 checkpoint.storage: "s3://my-bucket/flink-checkpoints/json-flatten"
 
+# ── Input ─────────────────────────────────────────────────────────────────────
+# Select which deserialization path the ingress ProcessFunction uses.
+# Supported values: json, csv
+input.format: "json"
+
+# Classpath resource of the input schema used by the configured ingress function.
+input.schema-resource: "schemas/input-persons-with-metadata.schema.json"
+
+# Classpath resource of the output schema used when split output needs pagination metadata.
+output.schema-resource: "schemas/output-persons-paged.schema.json"
+
+# Select which serialization path the egress ProcessFunction uses.
+# Supported values: json, csv
+output.format: "json"
+
 # ── Processing ────────────────────────────────────────────────────────────────
 # Absolute path to the third-party JAR — must be readable from all TaskManagers.
 # Leave blank to use the built-in String.toUpperCase() fallback (dev/test mode).
@@ -53,7 +68,7 @@ processing.split-enabled: true
 
 # Name of the flat-Row field whose array should be paginated by SplitFunction.
 # Only used when processing.split-enabled=true.
-processing.split-field: "search_engines"
+processing.split-field: "persons"
 
 # ── Flatten ───────────────────────────────────────────────────────────────────
 # Nesting depth and array size are unbounded — every level of the incoming

@@ -8,19 +8,19 @@ import java.util.Map;
 
 /**
  * Envelope that carries Kafka metadata alongside the business payload ({@link Row})
- * through every operator in the pipeline.
+ * through the input, transform, split, and output stages of the pipeline.
  *
  * <h2>Lifecycle</h2>
  * <ol>
  *   <li>{@code KafkaEnvelopeDeserializer} creates the message with {@code payload = null}
  *       and populates {@code kafkaKey}, {@code originalBytes}, and {@code headers}.</li>
- *   <li>{@code ValidateSplitFlattenFunction} calls {@link #withPayload(Row)} to attach
- *       the flattened Row and emits one {@code ProcessedMessage} per page.</li>
- *   <li>Downstream operators ({@code FieldMappingFunction}, {@code UpperCaseMapFunction})
- *       call {@link #withPayload(Row)} again to attach a transformed Row while preserving
- *       all metadata fields unchanged.</li>
- *   <li>{@code ReconstructSerializer} serialises the payload to JSON and copies
- *       {@code kafkaKey} and {@code headers} onto the output {@code ProducerRecord}.</li>
+ *   <li>The configured input {@code ProcessFunction} attaches a parsed/flattened
+ *       {@link Row} by calling {@link #withPayload(Row)}.</li>
+ *   <li>Downstream operators such as {@code UpperCaseMapFunction} and the optional
+ *       {@code SplitFunction} call {@link #withPayload(Row)} again to attach a transformed
+ *       or paged Row while preserving all Kafka metadata unchanged.</li>
+ *   <li>The configured output {@code ProcessFunction} reads the {@link Row} payload and
+ *       serializes it into the outgoing Kafka value bytes.</li>
  * </ol>
  *
  * <h2>DLQ</h2>
@@ -46,8 +46,8 @@ public final class ProcessedMessage implements Serializable {
     private final Map<String, byte[]> headers;
 
     /**
-     * Business payload — {@code null} at the source, set by
-     * {@code ValidateSplitFlattenFunction} and replaced by each downstream transformer.
+     * Business payload — {@code null} at the source, set by the configured input stage and
+     * replaced by each downstream row-transforming operator.
      */
     private final Row payload;
 

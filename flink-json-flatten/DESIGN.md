@@ -1,98 +1,215 @@
-# Flink JSON Flatten Pipeline — Design
+# Flink Flatten Pipeline — Design
 
 ## Overview
 
-Reads JSON messages from Kafka, validates and flattens them into a single named
-Flink `Row`, applies field transformations on the **complete unsplit record**,
-then optionally splits into pages before writing to Kafka with exactly-once guarantees.
+The pipeline reads raw Kafka messages as `byte[]`, wraps them in a `ProcessedMessage`,
+selects the configured **input `ProcessFunction`** (`JSON` or `CSV`) to build a
+named Flink `Row`, applies field transformations on the **complete unsplit row**,
+optionally splits array content into pages, then selects the configured **output
+`ProcessFunction`** (`JSON` or `CSV`) to serialize the row back to bytes before
+writing to Kafka with exactly-once guarantees.
+
+The current runtime supports:
+- **JSON input** → validate against JSON Schema, then flatten into dot-notation `Row`
+- **CSV input** → parse ordered mandatory columns into `Row`
+- **JSON output** → reconstruct hierarchical JSON bytes from `Row`
+- **CSV output** → serialize ordered CSV bytes from `Row`
 
 ---
 
 ## Pipeline Topology
 
-```
+```text
 KafkaSource (input-topic, byte[])
       │
       ▼
-ValidateFlattenFunction ──side-output──► DLQ KafkaSink (dlq-topic)
-      │  ProcessedMessage — full Row, ALL array elements present
+KafkaEnvelopeDeserializer
+      │  byte[] -> ProcessedMessage(originalBytes, kafkaKey, headers, payload=null)
+      ▼
+InputProcessFunctionFactory.create(config) ──side-output──► DLQ KafkaSink (dlq-topic)
+      │  JSON -> JsonInputProcessFunction
+      │  CSV  -> CsvInputProcessFunction
+      │  ProcessedMessage(payload=Row)
       ▼
 UpperCaseMapFunction
-      │  ProcessedMessage — all matching string fields uppercased across every array element
+      │  ProcessedMessage(payload=transformed Row)
       ▼  (only when processing.split-enabled=true)
-SplitFunction  (splits on processing.split-field)
-      │  ProcessedMessage × N pages — items re-indexed 0…(pageSize-1) per page
+SplitFunction
+      │  ProcessedMessage x N pages (payload=page Row)
+      ▼
+OutputProcessFunctionFactory.create(config) ──side-output──► DLQ KafkaSink (dlq-topic)
+      │  JSON -> JsonOutputProcessFunction
+      │  CSV  -> CsvOutputProcessFunction
+      │  SerializedMessage(value=final bytes)
       ▼
 KafkaSink (output-topic, exactly-once)
 ```
 
 ---
 
-## Steps
+## Message Model
 
-### Step 1 — Kafka Source
-- Reads raw `byte[]` messages from the configured input Kafka topic.
-- Deserializes via `KafkaEnvelopeDeserializer` → `ProcessedMessage`.
-- `isolation.level=read_committed` skips uncommitted messages (EOS consumer side).
-- Starts from earliest committed offsets.
+### `ProcessedMessage`
+Carries Kafka envelope metadata and the business payload while the record moves
+through input, transform, and split stages.
+
+Fields:
+- `kafkaKey: byte[]`
+- `originalBytes: byte[]`
+- `headers: Map<String, byte[]>`
+- `payload: Row`
+
+Lifecycle:
+1. `KafkaEnvelopeDeserializer` creates `ProcessedMessage` with `payload = null`
+2. Input `ProcessFunction` parses `originalBytes` and attaches `payload = Row`
+3. Transform/split stages replace `payload` with transformed or paged `Row`
+4. Output `ProcessFunction` reads `payload` and produces final serialized bytes
+
+### `SerializedMessage`
+Represents the final Kafka-ready output from the configured output stage.
+
+Fields:
+- `kafkaKey: byte[]`
+- `value: byte[]`
+- `headers: Map<String, byte[]>`
 
 ---
 
-### Step 2 — `ValidateFlattenFunction`
-Validates required fields then flattens the **entire** JSON tree into one `Row.withNames()`.
+## Runtime Steps
 
-| Sub-step | What happens |
-|---|---|
-| **Validate** | Checks required top-level fields against `input-netflix-categories.schema.json`. Failures → DLQ. |
-| **Flatten** | Converts the full nested JSON (including all array elements) into dot-notation `Row` keys, e.g. `search_engines.0.imdb.director`. No splitting is performed here. |
+### Step 1 — Kafka Source
+- Reads raw `byte[]` messages from the configured input Kafka topic
+- Uses `KafkaEnvelopeDeserializer`
+- Preserves the Kafka key and headers in `ProcessedMessage`
+- Sets `payload = null` at the source
+- Uses `isolation.level=read_committed`
 
-The full unsplit Row is emitted so downstream operators can process **all array
-elements in one pass**.
+---
 
-#### Step 2a — DLQ Side Output
-Validation errors and parse failures are serialized via `DlqSerializationSchema`
-and written to the DLQ Kafka topic.
+### Step 2 — Input `ProcessFunction` Selection
+Runtime input handling is chosen from configuration:
+- `input.format=json` -> `JsonInputProcessFunction`
+- `input.format=csv`  -> `CsvInputProcessFunction`
+
+Selection is done by `InputProcessFunctionFactory.create(config)`.
+
+#### Step 2a — `JsonInputProcessFunction`
+- Loads the configured input JSON schema from `input.schema-resource`
+- Analyzes it with `InputSchemaInfo.analyze(...)`
+- Parses the incoming `originalBytes` into `JsonNode`
+- Validates required fields
+- Flattens the entire JSON tree into `Row.withNames()`
+- Uses dot-notation keys such as:
+  - `metadata.timestamp`
+  - `persons.0.firstName`
+  - `persons.1.address.city`
+- Routes parse or validation failures to the input DLQ side output
+
+**Shared helper logic:**
+`ValidateFlattenFunction` still contains reusable JSON validation/flatten helpers,
+but it is no longer the live ingress operator in the production topology.
+
+#### Step 2b — `CsvInputProcessFunction`
+- Loads the configured CSV schema from `input.schema-resource`
+- Uses `CsvDeserializer`
+- Derives ordered columns from the schema `required` array via `SchemaAnalyzer.extractCsvColumns(...)`
+- Treats CSV fields as mandatory and positional
+- Builds a named `Row` from the incoming CSV line
+- Routes malformed/short/invalid CSV records to the input DLQ side output
 
 ---
 
 ### Step 3 — `UpperCaseMapFunction`
-Iterates **every field name** in the full Row and uppercases string values whose
-name matches any configured pattern in `processing.uppercase-field-keys`.
+Applies field transformation on the **full unsplit row**.
 
-| Key behaviour | Detail |
-|---|---|
-| **Full row scope** | Operates before split, so all `search_engines.N.imdb.director` keys are transformed in one map call. |
-| **Wildcard patterns** | `search_engines.*.imdb.director` matches every index. |
-| **No re-processing per page** | Because this runs pre-split, every generated page inherits already-transformed values automatically. |
+Behavior:
+- Iterates all named `Row` fields
+- Matches field names against configured patterns in `processing.uppercase-field-keys`
+- Uppercases matching string values
+- Runs before splitting, so all array elements are transformed in a single pass
+
+Examples:
+- `person.name`
+- `persons.*.firstName`
+- `search_engines.*.imdb.director`
 
 ---
 
-### Step 3a — `SplitFunction` _(conditional)_
-
+### Step 4 — `SplitFunction` (Conditional)
 Activated only when `processing.split-enabled=true`.
 
-| Property | CLI flag | Default | Description |
-|---|---|---|---|
-| Enable/disable | `processing.split-enabled` | `true` | Set to `false` to skip splitting entirely |
-| Field to split | `processing.split-field` | `search_engines` | Top-level Row array key to paginate |
-| Page size | `splitting.page-size` | `100` | Maximum items per output page |
+Uses:
+- `processing.split-field`
+- `splitting.page-size`
+- `output.schema-resource` analyzed into `PaginationSchema`
 
-**When enabled:**
-- Scans the flat Row for keys matching `{splitField}.N.*`.
-- Emits one `ProcessedMessage` per page of `pageSize` items.
-- Items within each page are re-indexed from 0.
-- Shared fields (top-level scalars, nested objects outside the split field) are copied to every page.
-- Pagination metadata (`index`, `total`, `count`) is added using field names from `PaginationSchema`.
+Behavior:
+- Scans the flat row for array-item keys under the configured split field
+- Emits one `ProcessedMessage` per page
+- Re-indexes items in each page from `0`
+- Copies shared non-array fields into every page
+- Writes pagination metadata fields defined by `PaginationSchema`
 
-**When disabled:**
-- `processedStream` flows directly to the sink — no `SplitFunction` operator is added to the topology.
+Example paged metadata fields:
+- `metadata.page`
+- `metadata.totalCount`
+- `count`
+
+If splitting is disabled:
+- the full transformed row flows directly to the output stage
 
 ---
 
-### Step 4 — Kafka Sink (Exactly-Once)
-- Serializes each `ProcessedMessage` back to hierarchical JSON bytes via `ReconstructSerializer`.
-- Writes to the output Kafka topic using Kafka transactions (`transactionalIdPrefix` + EOS producer).
-- `transaction.timeout.ms` must exceed checkpoint interval + timeout.
+### Step 5 — Output `ProcessFunction` Selection
+Runtime output handling is chosen from configuration:
+- `output.format=json` -> `JsonOutputProcessFunction`
+- `output.format=csv`  -> `CsvOutputProcessFunction`
+
+Selection is done by `OutputProcessFunctionFactory.create(config)`.
+
+#### Step 5a — `JsonOutputProcessFunction`
+- Uses `ReconstructSerializer`
+- Reads the `Row` payload from `ProcessedMessage`
+- Reconstructs hierarchical JSON bytes from dot-notation row fields
+- Emits `SerializedMessage`
+- Routes output serialization failures to the output DLQ side output
+
+#### Step 5b — `CsvOutputProcessFunction`
+- Uses `CsvSerializer`
+- Serializes fields in the order defined by the configured CSV schema (`output.schema-resource`)
+- Emits `SerializedMessage`
+- Routes output serialization failures to the output DLQ side output
+
+---
+
+### Step 6 — Kafka Sink
+- Writes `SerializedMessage` to the configured output topic
+- Uses `SerializedMessageKafkaRecordSerializationSchema`
+- Preserves Kafka key and headers
+- Uses Kafka transactions for exactly-once delivery
+
+---
+
+## DLQ Behavior
+
+There are two independent DLQ side outputs:
+
+### Input DLQ
+Produced by the selected input `ProcessFunction` when:
+- input bytes are empty/null
+- JSON parsing fails
+- JSON schema validation fails
+- CSV parsing fails
+- CSV field count does not match schema-defined columns
+
+### Output DLQ
+Produced by the selected output `ProcessFunction` when:
+- JSON reconstruction fails
+- CSV serialization fails
+- downstream serializer unexpectedly returns `null`
+
+Both DLQ flows are written with `DlqSerializationSchema` to the configured
+`kafka.dlq-topic`.
 
 ---
 
@@ -101,13 +218,18 @@ Activated only when `processing.split-enabled=true`.
 | Layer | Mechanism |
 |---|---|
 | Source | `isolation.level=read_committed` |
-| Engine | Flink checkpointing (`EXACTLY_ONCE`, interval-based) |
+| Engine | Flink checkpointing (`EXACTLY_ONCE`) |
 | Sink | Kafka transactions via `transactionalIdPrefix` |
+
+Notes:
+- `transaction.timeout.ms` must exceed checkpoint interval + timeout
+- checkpoint storage is configured via `checkpoint.storage`
 
 ---
 
 ## Configuration Reference
 
+### Kafka
 | CLI flag | Default | Description |
 |---|---|---|
 | `kafka.bootstrap-servers` | `localhost:9092` | Kafka broker list |
@@ -115,16 +237,41 @@ Activated only when `processing.split-enabled=true`.
 | `kafka.output-topic` | `output-topic` | Sink topic |
 | `kafka.dlq-topic` | `dlq-topic` | Dead-letter topic |
 | `kafka.consumer-group` | `flink-json-flatten-cg` | Consumer group ID |
+| `kafka.transaction-prefix` | `flink-json-flatten` | Kafka transactional ID prefix |
+| `kafka.transaction-timeout-ms` | `900000` | Kafka transaction timeout |
+
+### Input / Output Format Selection
+| CLI flag | Default | Description |
+|---|---|---|
+| `input.format` / `input_format` | `json` | Selects `JSON` or `CSV` input `ProcessFunction` |
+| `input.schema-resource` | `schemas/input-persons-with-metadata.schema.json` | Classpath schema used by the selected input stage |
+| `output.format` / `output_format` | `json` | Selects `JSON` or `CSV` output `ProcessFunction` |
+| `output.schema-resource` | `schemas/output-persons-paged.schema.json` | Classpath schema used by split pagination and/or CSV output ordering |
+
+### Transform / Split
+| CLI flag | Default | Description |
+|---|---|---|
+| `processing.uppercase-field-keys` | `person.name,name` | Comma-separated field patterns to uppercase |
+| `processing.split-enabled` | `true` | Enable/disable post-transform page splitting |
+| `processing.split-field` | `persons` | Top-level row array field to paginate |
+| `splitting.page-size` | `100` | Maximum items per page |
+| `flatten.null-handling` | `INCLUDE` | JSON null handling: `INCLUDE`, `EXCLUDE`, `REPLACE_EMPTY_STRING` |
+
+### Third-Party Processor
+| CLI flag | Default | Description |
+|---|---|---|
+| `processing.third-party-jar` | _(empty)_ | Vendor JAR path (fallback is built-in uppercase) |
+| `processing.processor-class` | `com.vendor.StringProcessor` | Vendor processor class |
+
+### Checkpointing / Runtime
+| CLI flag | Default | Description |
+|---|---|---|
 | `job.parallelism` | `4` | Flink operator parallelism |
 | `checkpoint.interval-ms` | `60000` | Checkpoint interval |
 | `checkpoint.timeout-ms` | `120000` | Checkpoint timeout |
-| `checkpoint.storage` | `file:///tmp/…` | State backend URI |
-| `processing.split-enabled` | `true` | Enable/disable page splitting |
-| `processing.split-field` | `search_engines` | Row array field to split on |
-| `splitting.page-size` | `100` | Items per page |
-| `flatten.null-handling` | `INCLUDE` | `INCLUDE` / `EXCLUDE` / `REPLACE_EMPTY_STRING` |
-| `processing.uppercase-field-keys` | `person.name,name` | Comma-separated field patterns to uppercase |
-| `processing.third-party-jar` | _(empty)_ | Vendor JAR path (falls back to `toUpperCase()`) |
+| `checkpoint.min-pause-ms` | `30000` | Minimum pause between checkpoints |
+| `checkpoint.unaligned` | `true` | Enable unaligned checkpoints |
+| `checkpoint.storage` | `file:///tmp/...` | Checkpoint storage URI |
 
 ---
 
@@ -132,14 +279,40 @@ Activated only when `processing.split-enabled=true`.
 
 | Class | Package | Role |
 |---|---|---|
-| `JsonFlattenPipeline` | `com.pipeline` | Entry point — topology wiring |
-| `ValidateFlattenFunction` | `com.pipeline` | Step 2 — validate + full-tree flatten + DLQ side output |
-| `UpperCaseMapFunction` | `com.pipeline.processing` | Step 3 — field transformation on full unsplit Row |
-| `SplitFunction` | `com.pipeline.splitting` | Step 3a — conditional page splitting post-transform |
-| `ValidateSplitFlattenFunction` | `com.pipeline` | _(legacy)_ combined validate+split+flatten in one pass |
-| `ReconstructSerializer` | `com.pipeline.serialization` | Row → JSON bytes for Kafka sink |
-| `KafkaEnvelopeDeserializer` | `com.pipeline.deserialization` | `byte[]` → `ProcessedMessage` for Kafka source |
-| `DlqSerializationSchema` | `com.pipeline.serialization` | `DlqRecord` → bytes for DLQ sink |
-| `PipelineConfig` | `com.pipeline.config` | Parsed CLI parameters |
-| `SchemaAnalyzer` | `com.pipeline.splitting.schema` | Loads and analyzes JSON schemas |
-| `PageBuilder` | `com.pipeline.splitting.page` | Builds a single JSON page `ObjectNode` |
+| `JsonFlattenPipeline` | `com.pipeline` | Entry point and topology wiring |
+| `KafkaEnvelopeDeserializer` | `com.pipeline.deserialization` | Kafka `byte[]` -> `ProcessedMessage` envelope |
+| `InputProcessFunctionFactory` | `com.pipeline` | Selects JSON or CSV input stage |
+| `JsonInputProcessFunction` | `com.pipeline` | JSON parse + validate + flatten -> `Row` |
+| `CsvInputProcessFunction` | `com.pipeline` | CSV parse -> `Row` |
+| `UpperCaseMapFunction` | `com.pipeline.processing` | Row field transformation |
+| `SplitFunction` | `com.pipeline.splitting` | Optional page splitting |
+| `OutputProcessFunctionFactory` | `com.pipeline` | Selects JSON or CSV output stage |
+| `JsonOutputProcessFunction` | `com.pipeline` | `Row` -> JSON bytes |
+| `CsvOutputProcessFunction` | `com.pipeline` | `Row` -> CSV bytes |
+| `SerializedMessage` | `com.pipeline.common` | Final Kafka-ready payload container |
+| `SerializedMessageKafkaRecordSerializationSchema` | `com.pipeline.serialization` | Writes `SerializedMessage` to Kafka |
+| `DlqSerializationSchema` | `com.pipeline.serialization` | Writes `DlqRecord` to Kafka |
+| `PipelineConfig` | `com.pipeline.config` | Parsed CLI / runtime configuration |
+| `SchemaAnalyzer` | `com.pipeline.splitting.schema` | Loads/analyzes JSON schemas |
+| `CsvDeserializer` | `com.pipeline.deserialization` | CSV input parsing |
+| `CsvSerializer` | `com.pipeline.serialization` | CSV output serialization |
+| `ReconstructSerializer` | `com.pipeline.serialization` | JSON reconstruction from flat `Row` |
+| `ValidateFlattenFunction` | `com.pipeline` | Shared JSON validation/flatten helper wrapper; not the main live ingress stage |
+
+---
+
+## Testing Notes
+
+Current round-trip scenario coverage follows the real runtime contract:
+- raw input bytes
+- `ProcessedMessage`
+- configured input `ProcessFunction`
+- row assertions
+- optional split
+- configured output `ProcessFunction`
+- final output assertions
+
+This is exercised for:
+- JSON input/output (`PersonsSplitRoundTripTest`)
+- CSV input/output (`CsvScenarioTest`)
+- JSON anyOf variant (`PersonsSplitRoundTripTest` anyOf cases)

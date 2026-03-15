@@ -21,6 +21,8 @@ import java.util.List;
  *     --job.parallelism 8 \
  *     --checkpoint.interval-ms 60000 \
  *     --checkpoint.storage s3://my-bucket/flink-checkpoints/json-flatten \
+ *     --processing.split-enabled true \
+ *     --processing.split-field persons \
  *     --processing.third-party-jar /opt/flink/lib/vendor-processor-1.0.0.jar
  * </pre>
  */
@@ -50,6 +52,20 @@ public final class PipelineConfig implements Serializable {
     private final boolean unalignedCheckpoints;
     private final String checkpointStorage;
 
+    // ── Input ─────────────────────────────────────────────────────────────────
+
+    /** Input format selector used by the input ProcessFunction factory. */
+    private final InputFormat inputFormat;
+
+    /** Classpath resource path for the input schema. */
+    private final String inputSchemaResource;
+
+    /** Classpath resource path for the output schema (used when splitting/serializing structured output). */
+    private final String outputSchemaResource;
+
+    /** Output format selector used by the egress serialization ProcessFunction. */
+    private final OutputFormat outputFormat;
+
     // ── Processing ────────────────────────────────────────────────────────────
 
     /**
@@ -72,9 +88,6 @@ public final class PipelineConfig implements Serializable {
 
     // ── Splitting ─────────────────────────────────────────────────────────────
 
-    /** Name of the JSON array field in the raw input message (e.g. {@code "persons"}). */
-    private final String splittingInputArrayField;
-
     /** Maximum number of items per output page. */
     private final int splittingPageSize;
 
@@ -87,7 +100,7 @@ public final class PipelineConfig implements Serializable {
 
     /**
      * Name of the flat-Row field whose array should be paginated by {@code SplitFunction}.
-     * Corresponds to the top-level array key in the flattened Row (e.g. {@code "search_engines"}).
+     * Corresponds to the top-level array key in the flattened Row (e.g. {@code "persons"}).
      * Only used when {@code splitEnabled=true}.
      */
     private final String splitField;
@@ -113,14 +126,17 @@ public final class PipelineConfig implements Serializable {
         this.checkpointMinPauseMs = b.checkpointMinPauseMs;
         this.unalignedCheckpoints = b.unalignedCheckpoints;
         this.checkpointStorage    = b.checkpointStorage;
+        this.inputFormat          = b.inputFormat;
+        this.inputSchemaResource  = b.inputSchemaResource;
+        this.outputSchemaResource = b.outputSchemaResource;
+        this.outputFormat         = b.outputFormat;
         this.thirdPartyJarPath    = b.thirdPartyJarPath;
         this.processorClassName   = b.processorClassName;
-        this.uppercaseFieldKeys        = List.copyOf(b.uppercaseFieldKeys);
-        this.splittingInputArrayField  = b.splittingInputArrayField;
-        this.splittingPageSize         = b.splittingPageSize;
-        this.splitEnabled              = b.splitEnabled;
-        this.splitField                = b.splitField;
-        this.nullHandling              = b.nullHandling;
+        this.uppercaseFieldKeys   = List.copyOf(b.uppercaseFieldKeys);
+        this.splittingPageSize    = b.splittingPageSize;
+        this.splitEnabled         = b.splitEnabled;
+        this.splitField           = b.splitField;
+        this.nullHandling         = b.nullHandling;
     }
 
     // ── Factory ───────────────────────────────────────────────────────────────
@@ -130,6 +146,8 @@ public final class PipelineConfig implements Serializable {
      * All parameters have sensible defaults for local development.
      */
     public static PipelineConfig fromParameterTool(ParameterTool p) {
+        String inputFormatRaw = p.get("input.format", p.get("input_format", "json"));
+        String outputFormatRaw = p.get("output.format", p.get("output_format", "json"));
         return new Builder()
                 .bootstrapServers(p.get("kafka.bootstrap-servers", "localhost:9092"))
                 .inputTopic(p.get("kafka.input-topic", "input-topic"))
@@ -144,13 +162,16 @@ public final class PipelineConfig implements Serializable {
                 .checkpointMinPauseMs(p.getLong("checkpoint.min-pause-ms", 30_000L))
                 .unalignedCheckpoints(p.getBoolean("checkpoint.unaligned", true))
                 .checkpointStorage(p.get("checkpoint.storage", "file:///tmp/flink-checkpoints/json-flatten"))
+                .inputFormat(InputFormat.valueOf(inputFormatRaw.trim().toUpperCase()))
+                .inputSchemaResource(p.get("input.schema-resource", "schemas/input-persons-with-metadata.schema.json"))
+                .outputSchemaResource(p.get("output.schema-resource", "schemas/output-persons-paged.schema.json"))
+                .outputFormat(OutputFormat.valueOf(outputFormatRaw.trim().toUpperCase()))
                 .thirdPartyJarPath(p.get("processing.third-party-jar", ""))
                 .processorClassName(p.get("processing.processor-class", "com.vendor.StringProcessor"))
                 .uppercaseFieldKeys(parseList(p.get("processing.uppercase-field-keys", "person.name,name")))
-                .splittingInputArrayField(p.get("splitting.input-array-field", "persons"))
                 .splittingPageSize(p.getInt("splitting.page-size", 100))
                 .splitEnabled(p.getBoolean("processing.split-enabled", true))
-                .splitField(p.get("processing.split-field", "search_engines"))
+                .splitField(p.get("processing.split-field", "persons"))
                 .nullHandling(NullHandling.valueOf(p.get("flatten.null-handling", "INCLUDE")))
                 .build();
     }
@@ -161,29 +182,42 @@ public final class PipelineConfig implements Serializable {
 
     // ── Getters ───────────────────────────────────────────────────────────────
 
-    public String getBootstrapServers()         { return bootstrapServers; }
-    public String getInputTopic()               { return inputTopic; }
-    public String getOutputTopic()              { return outputTopic; }
-    public String getDlqTopic()                 { return dlqTopic; }
-    public String getConsumerGroup()            { return consumerGroup; }
-    public String getTransactionPrefix()        { return transactionPrefix; }
-    public long getTransactionTimeoutMs()       { return transactionTimeoutMs; }
-    public int getParallelism()                 { return parallelism; }
-    public long getCheckpointIntervalMs()       { return checkpointIntervalMs; }
-    public long getCheckpointTimeoutMs()        { return checkpointTimeoutMs; }
-    public long getCheckpointMinPauseMs()       { return checkpointMinPauseMs; }
-    public boolean isUnalignedCheckpoints()     { return unalignedCheckpoints; }
-    public String getCheckpointStorage()        { return checkpointStorage; }
-    public String getThirdPartyJarPath()        { return thirdPartyJarPath; }
-    public String getProcessorClassName()       { return processorClassName; }
-    public List<String> getUppercaseFieldKeys()        { return uppercaseFieldKeys; }
-    public String getSplittingInputArrayField()        { return splittingInputArrayField; }
-    public int getSplittingPageSize()                  { return splittingPageSize; }
-    public boolean isSplitEnabled()                    { return splitEnabled; }
-    public String getSplitField()                      { return splitField; }
-    public NullHandling getNullHandling()              { return nullHandling; }
+    public String getBootstrapServers()              { return bootstrapServers; }
+    public String getInputTopic()                    { return inputTopic; }
+    public String getOutputTopic()                   { return outputTopic; }
+    public String getDlqTopic()                      { return dlqTopic; }
+    public String getConsumerGroup()                 { return consumerGroup; }
+    public String getTransactionPrefix()             { return transactionPrefix; }
+    public long getTransactionTimeoutMs()            { return transactionTimeoutMs; }
+    public int getParallelism()                      { return parallelism; }
+    public long getCheckpointIntervalMs()            { return checkpointIntervalMs; }
+    public long getCheckpointTimeoutMs()             { return checkpointTimeoutMs; }
+    public long getCheckpointMinPauseMs()            { return checkpointMinPauseMs; }
+    public boolean isUnalignedCheckpoints()          { return unalignedCheckpoints; }
+    public String getCheckpointStorage()             { return checkpointStorage; }
+    public InputFormat getInputFormat()              { return inputFormat; }
+    public String getInputSchemaResource()           { return inputSchemaResource; }
+    public String getOutputSchemaResource()          { return outputSchemaResource; }
+    public OutputFormat getOutputFormat()            { return outputFormat; }
+    public String getThirdPartyJarPath()             { return thirdPartyJarPath; }
+    public String getProcessorClassName()            { return processorClassName; }
+    public List<String> getUppercaseFieldKeys()      { return uppercaseFieldKeys; }
+    public int getSplittingPageSize()                { return splittingPageSize; }
+    public boolean isSplitEnabled()                  { return splitEnabled; }
+    public String getSplitField()                    { return splitField; }
+    public NullHandling getNullHandling()            { return nullHandling; }
 
     // ── Inner types ───────────────────────────────────────────────────────────
+
+    public enum InputFormat {
+        JSON,
+        CSV
+    }
+
+    public enum OutputFormat {
+        JSON,
+        CSV
+    }
 
     public enum NullHandling {
         /** Include null-valued keys in the Row. */
@@ -210,36 +244,42 @@ public final class PipelineConfig implements Serializable {
         private long   checkpointMinPauseMs  = 30_000L;
         private boolean unalignedCheckpoints = true;
         private String checkpointStorage     = "file:///tmp/flink-checkpoints/json-flatten";
+        private InputFormat inputFormat      = InputFormat.JSON;
+        private String inputSchemaResource   = "schemas/input-persons-with-metadata.schema.json";
+        private String outputSchemaResource  = "schemas/output-persons-paged.schema.json";
+        private OutputFormat outputFormat    = OutputFormat.JSON;
         private String thirdPartyJarPath     = "";
         private String processorClassName    = "com.vendor.StringProcessor";
-        private List<String> uppercaseFieldKeys      = List.of("person.name", "name");
-        private String splittingInputArrayField      = "persons";
-        private int    splittingPageSize             = 100;
-        private boolean splitEnabled                 = true;
-        private String  splitField                   = "search_engines";
-        private NullHandling nullHandling            = NullHandling.INCLUDE;
+        private List<String> uppercaseFieldKeys = List.of("person.name", "name");
+        private int    splittingPageSize        = 100;
+        private boolean splitEnabled            = true;
+        private String splitField               = "persons";
+        private NullHandling nullHandling       = NullHandling.INCLUDE;
 
-        public Builder bootstrapServers(String v)         { this.bootstrapServers = v;     return this; }
-        public Builder inputTopic(String v)               { this.inputTopic = v;           return this; }
-        public Builder outputTopic(String v)              { this.outputTopic = v;          return this; }
-        public Builder dlqTopic(String v)                 { this.dlqTopic = v;             return this; }
-        public Builder consumerGroup(String v)            { this.consumerGroup = v;        return this; }
-        public Builder transactionPrefix(String v)        { this.transactionPrefix = v;    return this; }
-        public Builder transactionTimeoutMs(long v)       { this.transactionTimeoutMs = v; return this; }
-        public Builder parallelism(int v)                 { this.parallelism = v;          return this; }
-        public Builder checkpointIntervalMs(long v)       { this.checkpointIntervalMs = v; return this; }
-        public Builder checkpointTimeoutMs(long v)        { this.checkpointTimeoutMs = v;  return this; }
-        public Builder checkpointMinPauseMs(long v)       { this.checkpointMinPauseMs = v; return this; }
-        public Builder unalignedCheckpoints(boolean v)    { this.unalignedCheckpoints = v; return this; }
-        public Builder checkpointStorage(String v)        { this.checkpointStorage = v;    return this; }
-        public Builder thirdPartyJarPath(String v)        { this.thirdPartyJarPath = v;    return this; }
-        public Builder processorClassName(String v)       { this.processorClassName = v;   return this; }
-        public Builder uppercaseFieldKeys(List<String> v)        { this.uppercaseFieldKeys = v;           return this; }
-        public Builder splittingInputArrayField(String v)        { this.splittingInputArrayField = v;     return this; }
-        public Builder splittingPageSize(int v)                  { this.splittingPageSize = v;            return this; }
-        public Builder splitEnabled(boolean v)                   { this.splitEnabled = v;                 return this; }
-        public Builder splitField(String v)                      { this.splitField = v;                   return this; }
-        public Builder nullHandling(NullHandling v)              { this.nullHandling = v;                 return this; }
+        public Builder bootstrapServers(String v)      { this.bootstrapServers = v;     return this; }
+        public Builder inputTopic(String v)            { this.inputTopic = v;           return this; }
+        public Builder outputTopic(String v)           { this.outputTopic = v;          return this; }
+        public Builder dlqTopic(String v)              { this.dlqTopic = v;             return this; }
+        public Builder consumerGroup(String v)         { this.consumerGroup = v;        return this; }
+        public Builder transactionPrefix(String v)     { this.transactionPrefix = v;    return this; }
+        public Builder transactionTimeoutMs(long v)    { this.transactionTimeoutMs = v; return this; }
+        public Builder parallelism(int v)              { this.parallelism = v;          return this; }
+        public Builder checkpointIntervalMs(long v)    { this.checkpointIntervalMs = v; return this; }
+        public Builder checkpointTimeoutMs(long v)     { this.checkpointTimeoutMs = v;  return this; }
+        public Builder checkpointMinPauseMs(long v)    { this.checkpointMinPauseMs = v; return this; }
+        public Builder unalignedCheckpoints(boolean v) { this.unalignedCheckpoints = v; return this; }
+        public Builder checkpointStorage(String v)     { this.checkpointStorage = v;    return this; }
+        public Builder inputFormat(InputFormat v)      { this.inputFormat = v;          return this; }
+        public Builder inputSchemaResource(String v)   { this.inputSchemaResource = v;  return this; }
+        public Builder outputSchemaResource(String v)  { this.outputSchemaResource = v; return this; }
+        public Builder outputFormat(OutputFormat v)    { this.outputFormat = v;        return this; }
+        public Builder thirdPartyJarPath(String v)     { this.thirdPartyJarPath = v;    return this; }
+        public Builder processorClassName(String v)    { this.processorClassName = v;   return this; }
+        public Builder uppercaseFieldKeys(List<String> v) { this.uppercaseFieldKeys = v; return this; }
+        public Builder splittingPageSize(int v)        { this.splittingPageSize = v;    return this; }
+        public Builder splitEnabled(boolean v)         { this.splitEnabled = v;         return this; }
+        public Builder splitField(String v)            { this.splitField = v;           return this; }
+        public Builder nullHandling(NullHandling v)    { this.nullHandling = v;         return this; }
 
         public PipelineConfig build() {
             return new PipelineConfig(this);
@@ -252,8 +292,11 @@ public final class PipelineConfig implements Serializable {
                 + "inputTopic='" + inputTopic + '\''
                 + ", outputTopic='" + outputTopic + '\''
                 + ", dlqTopic='" + dlqTopic + '\''
+                + ", inputFormat=" + inputFormat
+                + ", outputFormat=" + outputFormat
+                + ", inputSchemaResource='" + inputSchemaResource + '\''
+                + ", outputSchemaResource='" + outputSchemaResource + '\''
                 + ", parallelism=" + parallelism
-                + ", checkpointIntervalMs=" + checkpointIntervalMs
                 + ", splitEnabled=" + splitEnabled
                 + ", splitField='" + splitField + '\''
                 + ", nullHandling=" + nullHandling
