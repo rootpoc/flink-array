@@ -78,6 +78,20 @@ public final class PipelineConfig implements Serializable {
     /** Maximum number of items per output page. */
     private final int splittingPageSize;
 
+    /**
+     * Whether to perform page splitting at all.
+     * When {@code false}, the {@code SplitFunction} step is skipped entirely and
+     * each fully-processed record flows directly to the sink as a single message.
+     */
+    private final boolean splitEnabled;
+
+    /**
+     * Name of the flat-Row field whose array should be paginated by {@code SplitFunction}.
+     * Corresponds to the top-level array key in the flattened Row (e.g. {@code "search_engines"}).
+     * Only used when {@code splitEnabled=true}.
+     */
+    private final String splitField;
+
     // ── Flatten ───────────────────────────────────────────────────────────────
 
     /** How to handle null JSON values: INCLUDE (default), EXCLUDE, REPLACE_EMPTY_STRING. */
@@ -104,6 +118,8 @@ public final class PipelineConfig implements Serializable {
         this.uppercaseFieldKeys        = List.copyOf(b.uppercaseFieldKeys);
         this.splittingInputArrayField  = b.splittingInputArrayField;
         this.splittingPageSize         = b.splittingPageSize;
+        this.splitEnabled              = b.splitEnabled;
+        this.splitField                = b.splitField;
         this.nullHandling              = b.nullHandling;
     }
 
@@ -133,6 +149,8 @@ public final class PipelineConfig implements Serializable {
                 .uppercaseFieldKeys(parseList(p.get("processing.uppercase-field-keys", "person.name,name")))
                 .splittingInputArrayField(p.get("splitting.input-array-field", "persons"))
                 .splittingPageSize(p.getInt("splitting.page-size", 100))
+                .splitEnabled(p.getBoolean("processing.split-enabled", true))
+                .splitField(p.get("processing.split-field", "search_engines"))
                 .nullHandling(NullHandling.valueOf(p.get("flatten.null-handling", "INCLUDE")))
                 .build();
     }
@@ -161,6 +179,8 @@ public final class PipelineConfig implements Serializable {
     public List<String> getUppercaseFieldKeys()        { return uppercaseFieldKeys; }
     public String getSplittingInputArrayField()        { return splittingInputArrayField; }
     public int getSplittingPageSize()                  { return splittingPageSize; }
+    public boolean isSplitEnabled()                    { return splitEnabled; }
+    public String getSplitField()                      { return splitField; }
     public NullHandling getNullHandling()              { return nullHandling; }
 
     // ── Inner types ───────────────────────────────────────────────────────────
@@ -195,6 +215,8 @@ public final class PipelineConfig implements Serializable {
         private List<String> uppercaseFieldKeys      = List.of("person.name", "name");
         private String splittingInputArrayField      = "persons";
         private int    splittingPageSize             = 100;
+        private boolean splitEnabled                 = true;
+        private String  splitField                   = "search_engines";
         private NullHandling nullHandling            = NullHandling.INCLUDE;
 
         public Builder bootstrapServers(String v)         { this.bootstrapServers = v;     return this; }
@@ -215,6 +237,8 @@ public final class PipelineConfig implements Serializable {
         public Builder uppercaseFieldKeys(List<String> v)        { this.uppercaseFieldKeys = v;           return this; }
         public Builder splittingInputArrayField(String v)        { this.splittingInputArrayField = v;     return this; }
         public Builder splittingPageSize(int v)                  { this.splittingPageSize = v;            return this; }
+        public Builder splitEnabled(boolean v)                   { this.splitEnabled = v;                 return this; }
+        public Builder splitField(String v)                      { this.splitField = v;                   return this; }
         public Builder nullHandling(NullHandling v)              { this.nullHandling = v;                 return this; }
 
         public PipelineConfig build() {
@@ -230,6 +254,8 @@ public final class PipelineConfig implements Serializable {
                 + ", dlqTopic='" + dlqTopic + '\''
                 + ", parallelism=" + parallelism
                 + ", checkpointIntervalMs=" + checkpointIntervalMs
+                + ", splitEnabled=" + splitEnabled
+                + ", splitField='" + splitField + '\''
                 + ", nullHandling=" + nullHandling
                 + '}';
     }

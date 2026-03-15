@@ -47,6 +47,14 @@ processing.processor-class:   "com.vendor.StringProcessor"
 # First key found in the FlatRow wins; remaining keys are skipped.
 processing.uppercase-field-keys: "person.name,name"
 
+# Whether to perform page splitting on the output array field.
+# When false, the SplitFunction step is skipped and each record flows directly to the sink.
+processing.split-enabled: true
+
+# Name of the flat-Row field whose array should be paginated by SplitFunction.
+# Only used when processing.split-enabled=true.
+processing.split-field: "search_engines"
+
 # ── Flatten ───────────────────────────────────────────────────────────────────
 # Nesting depth and array size are unbounded — every level of the incoming
 # message is flattened as-is. Only genuine JSON parse failures go to the DLQ.

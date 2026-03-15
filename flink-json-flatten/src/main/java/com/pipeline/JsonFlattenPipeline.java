@@ -10,6 +10,7 @@ import com.pipeline.deserialization.KafkaEnvelopeDeserializer;
 import com.pipeline.serialization.ReconstructSerializer;
 import com.pipeline.common.typeinfo.ProcessedMessageTypeInfo;
 import com.pipeline.common.PaginationSchema;
+import com.pipeline.splitting.SplitFunction;
 import com.pipeline.splitting.schema.SchemaAnalyzer;
 import com.pipeline.validation.InputSchemaInfo;
 import org.apache.flink.api.java.utils.ParameterTool;
@@ -38,27 +39,33 @@ import java.util.Properties;
  *  KafkaSource (input-topic, byte[])
  *       │
  *       ▼
- *  ValidateSplitFlattenFunction    ──side-output──►  DLQ KafkaSink (dlq-topic)
+ *  ValidateFlattenFunction       ──side-output──►  DLQ KafkaSink (dlq-topic)
  *  1. Validate required fields against input schema
- *  2. Split array into pages
- *  3. Flatten each page → Row.withNames()
+ *  2. Flatten entire JSON → Row.withNames()  (all arrays present, no split)
  *       │
  *       ▼
  *  UpperCaseMapFunction
- *  row.getField("person.name") → uppercase → row.setField(...)
- *       │  Row (mutated)
+ *  Applies string transformation to every matching field across the full Row
+ *  (all array elements are in-place — transformation is done once, not per page)
+ *       │
+ *       ▼  (only when processing.split-enabled=true)
+ *  SplitFunction  (splits on processing.split-field)
+ *  Splits the processed Row into pages; emits one ProcessedMessage per page,
+ *  with items re-indexed from 0 within each page.
+ *  When processing.split-enabled=false this step is bypassed entirely.
+ *       │
  *       ▼
  *  ReconstructSerializer
  *  Row → hierarchical JSON bytes
  *       │
  *       ▼
- *  KafkaSink (output-topic, EXACTLY_ONCE)
+ *  KafkaSink (output-topic, exactly-once via Kafka transactions)
  * </pre>
  *
  * <h2>Exactly-once guarantee</h2>
  * <ul>
  *   <li>Source: {@code isolation.level=read_committed}</li>
- *   <li>Sink: {@link DeliveryGuarantee#EXACTLY_ONCE} Kafka transactions</li>
+ *   <li>Sink: Kafka transactions ({@code transactionalIdPrefix} + EOS producer)</li>
  *   <li>{@code transaction.timeout.ms} must exceed checkpoint interval + timeout</li>
  * </ul>
  *
@@ -66,12 +73,14 @@ import java.util.Properties;
  * <pre>
  *   flink run -c com.pipeline.JsonFlattenPipeline flink-json-flatten-fat.jar \
  *     --kafka.bootstrap-servers broker1:9092 \
- *     --kafka.input-topic input-topic     \
- *     --kafka.output-topic output-topic   \
- *     --kafka.dlq-topic dlq-topic         \
- *     --job.parallelism 8                 \
- *     --checkpoint.interval-ms 60000      \
- *     --checkpoint.storage s3://bucket/cp \
+ *     --kafka.input-topic input-topic         \
+ *     --kafka.output-topic output-topic       \
+ *     --kafka.dlq-topic dlq-topic             \
+ *     --job.parallelism 8                     \
+ *     --checkpoint.interval-ms 60000          \
+ *     --checkpoint.storage s3://bucket/cp     \
+ *     --processing.split-enabled true         \
+ *     --processing.split-field search_engines \
  *     --processing.third-party-jar /opt/flink/lib/vendor-1.0.jar
  * </pre>
  */
@@ -126,7 +135,7 @@ public final class JsonFlattenPipeline {
                 .setParallelism(P)
                 .uid("kafka-source");
 
-        // ── 2. Validate + split + flatten (single operator, one JSON parse per message) ──
+        // ── 2. Validate + flatten (no split) ──────────────────────────────────
         InputSchemaInfo  inputSchema;
         PaginationSchema outputSchema;
         try {
@@ -139,18 +148,16 @@ public final class JsonFlattenPipeline {
         }
 
         SingleOutputStreamOperator<ProcessedMessage> flatStream = rawStream
-                .process(new ValidateSplitFlattenFunction(
+                .process(new ValidateFlattenFunction(
                         inputSchema,
-                        outputSchema,
-                        config.getSplittingPageSize(),
                         config.getNullHandling()))
-                .name("validate-split-flatten")
-                .uid("validate-split-flatten")
+                .name("validate-flatten")
+                .uid("validate-flatten")
                 .setParallelism(P)
                 .returns(ProcessedMessageTypeInfo.INSTANCE);
 
-        // ── 2a. DLQ side output (validation failures, parse errors, split errors) ──
-        flatStream.getSideOutput(ValidateSplitFlattenFunction.DLQ_TAG)
+        // ── 2a. DLQ side output (validation failures, parse errors) ───────────
+        flatStream.getSideOutput(ValidateFlattenFunction.DLQ_TAG)
                 .sinkTo(KafkaSink.<DlqRecord>builder()
                         .setBootstrapServers(config.getBootstrapServers())
                         .setRecordSerializer(new DlqSerializationSchema(config.getDlqTopic()))
@@ -160,7 +167,7 @@ public final class JsonFlattenPipeline {
                 .uid("dlq-sink")
                 .setParallelism(P);
 
-        // ── 3. Apply vendor processor to named field ──────────────────────────
+        // ── 3. Apply transformation to ALL fields in the full unsplit Row ─────
         DataStream<ProcessedMessage> processedStream = flatStream
                 .map(new UpperCaseMapFunction(config))
                 .name("uppercase-map")
@@ -168,16 +175,34 @@ public final class JsonFlattenPipeline {
                 .setParallelism(P)
                 .returns(ProcessedMessageTypeInfo.INSTANCE);
 
+        // ── 3a. Conditionally split into pages AFTER all transformations ───────
+        final DataStream<ProcessedMessage> presinkStream;
+        if (config.isSplitEnabled()) {
+            LOG.info("Split enabled on field '{}', pageSize={}",
+                    config.getSplitField(), config.getSplittingPageSize());
+            presinkStream = processedStream
+                    .flatMap(new SplitFunction(
+                            outputSchema,
+                            config.getSplittingPageSize(),
+                            config.getSplitField()))
+                    .name("split-pages")
+                    .uid("split-pages")
+                    .setParallelism(P)
+                    .returns(ProcessedMessageTypeInfo.INSTANCE);
+        } else {
+            LOG.info("Split disabled — records flow directly to sink");
+            presinkStream = processedStream;
+        }
+
         // ── 4. Reconstruct JSON and write to Kafka (exactly-once) ─────────────
         Properties eosProps = baseProducerProps();
         eosProps.setProperty("transaction.timeout.ms",
                 String.valueOf(config.getTransactionTimeoutMs()));
 
-        processedStream
+        presinkStream
                 .sinkTo(KafkaSink.<ProcessedMessage>builder()
                         .setBootstrapServers(config.getBootstrapServers())
                         .setRecordSerializer(new ReconstructSerializer(config.getOutputTopic()))
-                     //   .setDeliveryGuarantee(DeliveryGuarantee.EXACTLY_ONCE)
                         .setTransactionalIdPrefix(config.getTransactionPrefix())
                         .setKafkaProducerConfig(eosProps)
                         .build())
@@ -185,16 +210,17 @@ public final class JsonFlattenPipeline {
                 .uid("kafka-sink")
                 .setParallelism(P);
 
-        LOG.info("Pipeline built: parallelism={}, {}->{} (dlq={})",
-                P, config.getInputTopic(), config.getOutputTopic(), config.getDlqTopic());
+        LOG.info("Pipeline built: parallelism={}, splitEnabled={}, splitField='{}', {}->{} (dlq={})",
+                P, config.isSplitEnabled(), config.getSplitField(),
+                config.getInputTopic(), config.getOutputTopic(), config.getDlqTopic());
     }
 
     // ── Builders ──────────────────────────────────────────────────────────────
 
     private static KafkaSource<ProcessedMessage> buildKafkaSource(PipelineConfig config) {
         Properties props = new Properties();
-        props.setProperty("isolation.level",  "read_committed"); // EOS: skip uncommitted msgs
-        props.setProperty("max.poll.records", "500");
+        props.setProperty("isolation.level",   "read_committed");
+        props.setProperty("max.poll.records",  "500");
         props.setProperty("fetch.max.wait.ms", "500");
 
         return KafkaSource.<ProcessedMessage>builder()
@@ -214,12 +240,12 @@ public final class JsonFlattenPipeline {
 
     private static Properties baseProducerProps() {
         Properties p = new Properties();
-        p.setProperty("acks",              "all");
-        p.setProperty("retries",           "10");
-        p.setProperty("retry.backoff.ms",  "200");
-        p.setProperty("linger.ms",         "5");
-        p.setProperty("batch.size",        "65536");
-        p.setProperty("compression.type",  "lz4");
+        p.setProperty("acks",             "all");
+        p.setProperty("retries",          "10");
+        p.setProperty("retry.backoff.ms", "200");
+        p.setProperty("linger.ms",        "5");
+        p.setProperty("batch.size",       "65536");
+        p.setProperty("compression.type", "lz4");
         return p;
     }
 }

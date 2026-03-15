@@ -137,7 +137,7 @@ public final class SchemaAnalyzer {
      */
     public static PaginationSchema analyze(JsonNode schemaRoot) {
         Map<String, JsonNode> props = new LinkedHashMap<>();
-        collectProperties(schemaRoot, schemaRoot, props);
+        collectFlatProperties(schemaRoot, schemaRoot, "", props);
 
         if (props.isEmpty()) {
             throw new IllegalArgumentException(
@@ -171,6 +171,63 @@ public final class SchemaAnalyzer {
     }
 
     // ── Property collection ───────────────────────────────────────────────────
+
+    /**
+     * Like {@link #collectProperties} but also recurses into {@code object}-typed property
+     * values, emitting their sub-properties with dot-notation keys (e.g. a {@code metadata}
+     * object containing {@code page} is emitted as {@code "metadata.page"}).
+     *
+     * <p>This allows {@link #analyze} to detect pagination fields that are nested inside
+     * a wrapper object (e.g. {@code metadata.page}, {@code metadata.totalCount}).
+     *
+     * <p>Array-typed properties and leaf properties are emitted at their current prefix,
+     * not descended into.
+     */
+    static void collectFlatProperties(JsonNode node, JsonNode schemaRoot,
+                                      String prefix, Map<String, JsonNode> result) {
+        if (node == null || node.isMissingNode() || !node.isObject()) return;
+
+        // Follow a local $ref
+        JsonNode ref = node.path("$ref");
+        if (ref.isTextual()) {
+            JsonNode resolved = resolveRef(ref.asText(), schemaRoot);
+            if (resolved != null) collectFlatProperties(resolved, schemaRoot, prefix, result);
+            return;
+        }
+
+        // Direct "properties" object
+        JsonNode properties = node.path("properties");
+        if (properties.isObject()) {
+            properties.fields().forEachRemaining(e -> {
+                String key   = prefix.isEmpty() ? e.getKey() : prefix + "." + e.getKey();
+                JsonNode val = e.getValue();
+                if ("object".equals(val.path("type").asText())) {
+                    // Recurse into nested object — emit its sub-properties with dot-notation
+                    collectFlatProperties(val, schemaRoot, key, result);
+                } else {
+                    result.putIfAbsent(key, val);
+                }
+            });
+        }
+
+        // Composition keywords
+        for (String k : COMPOSITION_KEYS) {
+            JsonNode arr = node.path(k);
+            if (arr.isArray()) arr.forEach(sub -> collectFlatProperties(sub, schemaRoot, prefix, result));
+        }
+
+        // Conditional keywords
+        for (String k : CONDITIONAL_KEYS) {
+            JsonNode sub = node.path(k);
+            if (!sub.isMissingNode()) collectFlatProperties(sub, schemaRoot, prefix, result);
+        }
+
+        // Definition containers
+        for (String k : DEFINITION_KEYS) {
+            JsonNode defs = node.path(k);
+            if (defs.isObject()) defs.forEach(def -> collectFlatProperties(def, schemaRoot, prefix, result));
+        }
+    }
 
     /**
      * Recursively collects property definitions from {@code node} into {@code result},

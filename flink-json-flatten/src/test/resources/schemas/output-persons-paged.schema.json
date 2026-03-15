@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/output-persons-paged.schema.json",
+  "title": "Paginated Persons Page",
+  "type": "object",
+  "properties": {
+    "metadata": {
+      "type": "object",
+      "properties": {
+        "page": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "0-based index of the current page"
+        },
+        "totalCount": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Total number of pages"
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp of the original request"
+        }
+      },
+      "required": ["page", "totalCount", "timestamp"]
+    },
+    "persons": {
+      "type": "array",
+      "description": "Person objects contained in this page",
+      "items": {
+        "type": "object",
+        "properties": {
+          "firstName": { "type": "string" },
+          "lastName":  { "type": "string" },
+          "age":       { "type": "integer" },
+          "address": {
+            "type": "object",
+            "properties": {
+              "street":     { "type": "string" },
+              "city":       { "type": "string" },
+              "postalCode": { "type": "string" },
+              "country":    { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "count": {
+      "type": "integer",
+      "description": "Number of persons in this page"
+    }
+  },
+  "required": ["metadata", "persons", "count"]
+}
