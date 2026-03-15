@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/flat-person.schema.json",
+  "title": "Flat Person with Address Fields",
+  "type": "object",
+  "properties": {
+    "firstName": {
+      "type": "string",
+      "minLength": 1
+    },
+    "lastName": {
+      "type": "string",
+      "minLength": 1
+    },
+    "age": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 150
+    },
+    "street": {
+      "type": "string",
+      "minLength": 1
+    },
+    "city": {
+      "type": "string",
+      "minLength": 1
+    },
+    "postalCode": {
+      "type": "string",
+      "pattern": "^[0-9]{5}$"
+    },
+    "country": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "required": [
+    "firstName",
+    "lastName",
+    "age",
+    "street",
+    "city",
+    "postalCode",
+    "country"
+  ],
+  "additionalProperties": false
+}
+
