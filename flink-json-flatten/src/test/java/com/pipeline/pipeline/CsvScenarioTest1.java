@@ -92,15 +92,15 @@ class CsvScenarioTest1 {
         assertEquals(7, fieldNames.size(), "All CSV fields must be present in the Row");
 
 
-        OneInputStreamOperatorTestHarness<ProcessedMessage, SerializedMessage> harness = new OneInputStreamOperatorTestHarness<>(
+        OneInputStreamOperatorTestHarness<ProcessedMessage, SerializedMessage> harness2 = new OneInputStreamOperatorTestHarness<>(
                 new ProcessOperator<>(OutputProcessFunctionFactory.create(CSV_CONFIG)));
-        harness.setup(org.apache.flink.api.common.typeinfo.TypeInformation.of(SerializedMessage.class)
+        harness2.setup(org.apache.flink.api.common.typeinfo.TypeInformation.of(SerializedMessage.class)
                 .createSerializer(new org.apache.flink.api.common.ExecutionConfig()));
-        harness.open();
-        harness.processElement( messages.get(0), System.currentTimeMillis());
+        harness2.open();
+        harness2.processElement( messages.get(0), System.currentTimeMillis());
 
-        String output = new String((harness.extractOutputValues().get(0).getValue(),StandardCharsets.UTF_8);
-        harness.close();
+        String output = new String((harness2.extractOutputValues().get(0).getValue()),StandardCharsets.UTF_8);
+        harness2.close();
         System.out.println("CSV output: " + output);
 
         assertEquals(CSV_INPUT, output,

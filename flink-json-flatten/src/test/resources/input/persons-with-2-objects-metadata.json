@@ -1,0 +1,42 @@
+{
+  "metadata": {
+    "totalCount": 2,
+    "page": 1,
+    "pageSize": 10,
+    "timestamp": "2026-03-14T17:57:00Z",
+    "apiVersion": "1.0"
+  },
+  "persons": [
+    {
+      "firstName": "John",
+      "lastName": "Doe",
+      "age": 35,
+      "grades": {
+        "mathGarde": 95,
+        "historyGrade": 88
+      },
+      "address": {
+        "street": "123 Main St",
+        "city": "Anytown",
+        "postalCode": "12345",
+        "country": "USA"
+      }
+    },
+    {
+      "firstName": "Jane",
+      "lastName": "Smith",
+      "age": 28,
+      "grades": {
+        "mathGarde": 100,
+        "historyGrade": 100
+      },
+      "address": {
+        "street": "456 Oak Ave",
+        "city": "Othertown",
+        "postalCode": "67890",
+        "country": "USA"
+      }
+    }
+  ]
+}
+

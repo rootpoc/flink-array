@@ -24,6 +24,21 @@ final class JsonRowFlattener {
                 violations.add("missing required field '" + path + "'");
             }
         }
+        validateFieldTypes(root, inputSchema.getFieldTypes(), "", violations);
+
+        String arrayFieldName = inputSchema.getArrayFieldName();
+        JsonNode items = arrayFieldName != null ? root.path(arrayFieldName) : null;
+        if (items != null && items.isArray()) {
+            for (int i = 0; i < items.size(); i++) {
+                JsonNode item = items.get(i);
+                for (String path : inputSchema.getRequiredItemFields()) {
+                    if (isMissingRequired(item, path)) {
+                        violations.add("missing required field '" + arrayFieldName + "." + i + "." + path + "'");
+                    }
+                }
+                validateFieldTypes(item, inputSchema.getItemFieldTypes(), arrayFieldName + "." + i + ".", violations);
+            }
+        }
         return violations;
     }
 
@@ -35,6 +50,60 @@ final class JsonRowFlattener {
             if (current.isMissingNode()) return false;
         }
         return current.path(parts[parts.length - 1]).isMissingNode();
+    }
+
+    private static void validateFieldTypes(JsonNode node,
+                                           java.util.Map<String, String> fieldTypes,
+                                           String pathPrefix,
+                                           List<String> violations) {
+        fieldTypes.forEach((path, expectedType) -> {
+            JsonNode value = getNodeAtPath(node, path);
+            if (value.isMissingNode() || value.isNull()) return;
+            if (matchesType(value, expectedType)) return;
+            violations.add("incorrect type for field '" + pathPrefix + path + "': expected "
+                    + expectedType + " but was " + actualType(value));
+        });
+    }
+
+    private static JsonNode getNodeAtPath(JsonNode node, String dotPath) {
+        JsonNode current = node;
+        for (String part : dotPath.split("\\.")) {
+            current = current.path(part);
+            if (current.isMissingNode()) {
+                return current;
+            }
+        }
+        return current;
+    }
+
+    private static boolean matchesType(JsonNode value, String expectedType) {
+        switch (expectedType) {
+            case "integer":
+                return value.isIntegralNumber();
+            case "number":
+                return value.isNumber();
+            case "string":
+                return value.isTextual();
+            case "boolean":
+                return value.isBoolean();
+            case "object":
+                return value.isObject();
+            case "array":
+                return value.isArray();
+            default:
+                return true;
+        }
+    }
+
+    private static String actualType(JsonNode value) {
+        if (value.isIntegralNumber()) return "integer";
+        if (value.isFloatingPointNumber()) return "number";
+        if (value.isTextual()) return "string";
+        if (value.isBoolean()) return "boolean";
+        if (value.isArray()) return "array";
+        if (value.isObject()) return "object";
+        if (value.isNull()) return "null";
+        return value.getNodeType().name().toLowerCase();
     }
 
     static void flattenInto(JsonNode node, String prefix, Row row, NullHandling nullHandling) {
@@ -86,4 +155,3 @@ final class JsonRowFlattener {
         return node.asText();
     }
 }
-

@@ -4,8 +4,10 @@ import com.fasterxml.jackson.databind.JsonNode;
 
 import java.io.Serializable;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -35,14 +37,20 @@ public final class InputSchemaInfo implements Serializable {
     private final String       arrayFieldName;
     private final List<String> requiredFields;
     private final List<String> requiredItemFields;
+    private final Map<String, String> fieldTypes;
+    private final Map<String, String> itemFieldTypes;
 
     public InputSchemaInfo(
             String arrayFieldName,
             List<String> requiredFields,
-            List<String> requiredItemFields) {
+            List<String> requiredItemFields,
+            Map<String, String> fieldTypes,
+            Map<String, String> itemFieldTypes) {
         this.arrayFieldName     = arrayFieldName;
         this.requiredFields     = List.copyOf(requiredFields);
         this.requiredItemFields = List.copyOf(requiredItemFields);
+        this.fieldTypes         = Map.copyOf(fieldTypes);
+        this.itemFieldTypes     = Map.copyOf(itemFieldTypes);
     }
 
     // ── Factory ───────────────────────────────────────────────────────────────
@@ -54,10 +62,12 @@ public final class InputSchemaInfo implements Serializable {
      * @return validation rules derived from the schema
      */
     public static InputSchemaInfo analyze(JsonNode schema) {
-        String       arrayFieldName = findArrayField(schema);
-        List<String> required       = extractRequired(schema);
-        List<String> itemRequired   = extractItemRequired(schema, arrayFieldName);
-        return new InputSchemaInfo(arrayFieldName, required, itemRequired);
+        String arrayFieldName = findArrayField(schema);
+        List<String> required = extractRequired(schema, schema);
+        List<String> itemRequired = extractItemRequired(schema, arrayFieldName);
+        Map<String, String> fieldTypes = extractLeafTypes(schema, schema);
+        Map<String, String> itemFieldTypes = extractItemLeafTypes(schema, arrayFieldName);
+        return new InputSchemaInfo(arrayFieldName, required, itemRequired, fieldTypes, itemFieldTypes);
     }
 
     // ── Accessors ─────────────────────────────────────────────────────────────
@@ -66,12 +76,16 @@ public final class InputSchemaInfo implements Serializable {
     public String       getArrayFieldName()     { return arrayFieldName; }
     public List<String> getRequiredFields()     { return requiredFields; }
     public List<String> getRequiredItemFields() { return requiredItemFields; }
+    public Map<String, String> getFieldTypes() { return fieldTypes; }
+    public Map<String, String> getItemFieldTypes() { return itemFieldTypes; }
 
     @Override
     public String toString() {
         return "InputSchemaInfo{arrayField='" + arrayFieldName
                 + "', required=" + requiredFields
-                + ", requiredItems=" + requiredItemFields + '}';
+                + ", requiredItems=" + requiredItemFields
+                + ", fieldTypes=" + fieldTypes
+                + ", itemFieldTypes=" + itemFieldTypes + '}';
     }
 
     // ── Schema analysis (private) ─────────────────────────────────────────────
@@ -90,13 +104,19 @@ public final class InputSchemaInfo implements Serializable {
         return null;
     }
 
-    private static List<String> extractRequired(JsonNode schema) {
+    private static List<String> extractRequired(JsonNode schema, JsonNode schemaRoot) {
         Set<String> result = new LinkedHashSet<>();
-        collectRequiredPaths(schema, "", result);
+        collectRequiredPaths(schema, schemaRoot, "", result);
         return new ArrayList<>(result);
     }
 
-    private static void collectRequiredPaths(JsonNode schema, String prefix, Set<String> result) {
+    private static void collectRequiredPaths(JsonNode schema, JsonNode schemaRoot, String prefix, Set<String> result) {
+        JsonNode resolved = resolveLocalRef(schema, schemaRoot);
+        if (resolved != null) {
+            collectRequiredPaths(resolved, schemaRoot, prefix, result);
+            return;
+        }
+
         JsonNode req = schema.path("required");
         if (req.isArray()) {
             req.forEach(n -> result.add(prefix + n.asText()));
@@ -106,30 +126,30 @@ public final class InputSchemaInfo implements Serializable {
         if (props.isObject()) {
             props.fields().forEachRemaining(entry -> {
                 JsonNode propSchema = entry.getValue();
-                if ("object".equals(propSchema.path("type").asText())) {
-                    collectRequiredPaths(propSchema, prefix + entry.getKey() + ".", result);
+                if (shouldTraverseObjectSchema(propSchema)) {
+                    collectRequiredPaths(propSchema, schemaRoot, prefix + entry.getKey() + ".", result);
                 }
             });
         }
 
         JsonNode allOf = schema.path("allOf");
         if (allOf.isArray()) {
-            allOf.forEach(sub -> collectRequiredPaths(sub, prefix, result));
+            allOf.forEach(sub -> collectRequiredPaths(sub, schemaRoot, prefix, result));
         }
 
         for (String key : new String[]{"anyOf", "oneOf"}) {
             JsonNode composition = schema.path(key);
             if (composition.isArray() && !composition.isEmpty()) {
-                result.addAll(intersectRequired(composition, prefix));
+                result.addAll(intersectRequired(composition, schemaRoot, prefix));
             }
         }
     }
 
-    private static Set<String> intersectRequired(JsonNode branches, String prefix) {
+    private static Set<String> intersectRequired(JsonNode branches, JsonNode schemaRoot, String prefix) {
         Set<String> intersection = null;
         for (JsonNode branch : branches) {
             Set<String> branchRequired = new LinkedHashSet<>();
-            collectRequiredPaths(branch, prefix, branchRequired);
+            collectRequiredPaths(branch, schemaRoot, prefix, branchRequired);
             if (intersection == null) {
                 intersection = new LinkedHashSet<>(branchRequired);
             } else {
@@ -144,6 +164,81 @@ public final class InputSchemaInfo implements Serializable {
         JsonNode items = schema.path("properties")
                                .path(arrayFieldName)
                                .path("items");
-        return extractRequired(items);
+        return extractRequired(items, schema);
+    }
+
+    private static Map<String, String> extractLeafTypes(JsonNode schema, JsonNode schemaRoot) {
+        Map<String, String> result = new LinkedHashMap<>();
+        collectLeafTypes(schema, schemaRoot, "", result);
+        return result;
+    }
+
+    private static Map<String, String> extractItemLeafTypes(JsonNode schema, String arrayFieldName) {
+        if (arrayFieldName == null) return Map.of();
+        JsonNode items = schema.path("properties")
+                .path(arrayFieldName)
+                .path("items");
+        return extractLeafTypes(items, schema);
+    }
+
+    private static void collectLeafTypes(JsonNode schema, JsonNode schemaRoot, String prefix, Map<String, String> result) {
+        JsonNode resolved = resolveLocalRef(schema, schemaRoot);
+        if (resolved != null) {
+            collectLeafTypes(resolved, schemaRoot, prefix, result);
+            return;
+        }
+
+        JsonNode props = schema.path("properties");
+        if (props.isObject()) {
+            props.fields().forEachRemaining(entry -> {
+                JsonNode propSchema = entry.getValue();
+                String path = prefix + entry.getKey();
+                if (shouldTraverseObjectSchema(propSchema)) {
+                    collectLeafTypes(propSchema, schemaRoot, path + ".", result);
+                    return;
+                }
+
+                String type = propSchema.path("type").asText();
+                if (!type.isBlank()) {
+                    result.putIfAbsent(path, type);
+                }
+            });
+        }
+
+        JsonNode allOf = schema.path("allOf");
+        if (allOf.isArray()) {
+            allOf.forEach(sub -> collectLeafTypes(sub, schemaRoot, prefix, result));
+        }
+
+        for (String key : new String[]{"anyOf", "oneOf"}) {
+            JsonNode composition = schema.path(key);
+            if (composition.isArray()) {
+                composition.forEach(sub -> collectLeafTypes(sub, schemaRoot, prefix, result));
+            }
+        }
+    }
+
+    private static boolean shouldTraverseObjectSchema(JsonNode schema) {
+        return "object".equals(schema.path("type").asText())
+                || schema.has("properties")
+                || schema.has("$ref")
+                || schema.has("allOf")
+                || schema.has("anyOf")
+                || schema.has("oneOf");
+    }
+
+    private static JsonNode resolveLocalRef(JsonNode schema, JsonNode schemaRoot) {
+        JsonNode ref = schema.path("$ref");
+        if (!ref.isTextual()) return null;
+        String refText = ref.asText();
+        if (!refText.startsWith("#/")) return null;
+
+        JsonNode current = schemaRoot;
+        for (String part : refText.substring(2).split("/")) {
+            part = part.replace("~1", "/").replace("~0", "~");
+            current = current.path(part);
+            if (current.isMissingNode()) return null;
+        }
+        return current;
     }
 }

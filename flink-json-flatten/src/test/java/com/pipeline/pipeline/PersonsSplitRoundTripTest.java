@@ -2,8 +2,10 @@ package com.pipeline.pipeline;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.pipeline.InputProcessFunctionFactory;
 import com.pipeline.OutputProcessFunctionFactory;
+import com.pipeline.common.DlqRecord;
 import com.pipeline.common.PaginationSchema;
 import com.pipeline.common.ProcessedMessage;
 import com.pipeline.common.SerializedMessage;
@@ -523,5 +525,41 @@ class PersonsSplitRoundTripTest {
         harness.close();
         assertEquals(1, output.size(), "output process function must emit exactly one serialized message");
         return output.get(0);
+    }
+
+    /**
+     * Verifies that a no-split JSON message missing a required person field is
+     * rejected during input validation and routed to the DLQ.
+     */
+    @Test
+    void withoutSplit_rowIsInCorrect_whenInputJsonIsMissingRequiredSchemaField() throws Exception {
+        ObjectNode invalidJson = PERSONS_JSON_NODE.deepCopy();
+        ((ObjectNode) invalidJson.get("persons").get(0)).remove("firstName");
+        byte[] invalidBytes = MAPPER.writeValueAsBytes(invalidJson);
+
+        var harness = new OneInputStreamOperatorTestHarness<>(
+                new ProcessOperator<>(InputProcessFunctionFactory.create(JSON_CONFIG)));
+        harness.setup(ProcessedMessageSerializer.INSTANCE);
+        harness.open();
+        harness.processElement(ProcessedMessage.ofValue(invalidBytes), System.currentTimeMillis());
+
+        assertTrue(harness.extractOutputValues().isEmpty(),
+                "input missing a required schema field must not emit a Row");
+
+        List<DlqRecord> dlqRecords = harness.getSideOutput(InputProcessFunctionFactory.DLQ_TAG).stream()
+                .map(org.apache.flink.streaming.runtime.streamrecord.StreamRecord::getValue)
+                .collect(Collectors.toList());
+        assertEquals(1, dlqRecords.size(), "invalid JSON must produce exactly one DLQ record");
+
+        DlqRecord dlq = dlqRecords.get(0);
+        assertArrayEquals(invalidBytes, dlq.getOriginalBytes(),
+                "DLQ record must preserve the invalid input payload");
+        assertEquals(IllegalArgumentException.class.getName(), dlq.getErrorClass());
+        assertTrue(dlq.getErrorMessage().contains("Input schema validation failed"),
+                "DLQ error must mention schema validation failure: " + dlq.getErrorMessage());
+        assertTrue(dlq.getErrorMessage().contains("missing required field 'persons.0.firstName'"),
+                "DLQ error must identify the missing field: " + dlq.getErrorMessage());
+
+        harness.close();
     }
 }
