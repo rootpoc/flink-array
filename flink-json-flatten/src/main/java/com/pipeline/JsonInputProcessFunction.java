@@ -53,7 +53,7 @@ public final class JsonInputProcessFunction
 
         try {
             JsonNode root = mapperLocal.get().readTree(bytes);
-            var violations = ValidateFlattenFunction.validate(root, inputSchema);
+            var violations = JsonRowFlattener.validate(root, inputSchema);
             if (!violations.isEmpty()) {
                 ctx.output(InputProcessFunctionFactory.DLQ_TAG,
                         DlqRecord.of(msg, new IllegalArgumentException("Input schema validation failed: " + violations)));
@@ -61,7 +61,7 @@ public final class JsonInputProcessFunction
             }
 
             Row row = Row.withNames();
-            ValidateFlattenFunction.flattenInto(root, "", row, config.getNullHandling());
+            JsonRowFlattener.flattenInto(root, "", row, config.getNullHandling());
             out.collect(msg.withPayload(row));
         } catch (Exception e) {
             LOG.warn("Failed to process JSON message ({} bytes): {}", bytes.length, e.getMessage());
@@ -74,4 +74,3 @@ public final class JsonInputProcessFunction
         return ProcessedMessageTypeInfo.INSTANCE;
     }
 }
-
