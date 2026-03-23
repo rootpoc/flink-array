@@ -3,6 +3,7 @@ package com.pipeline.pipeline;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.pipeline.InputProcessFunctionFactory;
 import com.pipeline.OutputProcessFunctionFactory;
+import com.pipeline.common.DlqRecord;
 import com.pipeline.common.ProcessedMessage;
 import com.pipeline.common.SerializedMessage;
 import com.pipeline.common.typeinfo.ProcessedMessageSerializer;
@@ -17,6 +18,7 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -107,6 +109,36 @@ class CsvScenarioTest {
                 "invalid CSV must not emit a Row");
         assertNotNull(harness.getSideOutput(InputProcessFunctionFactory.DLQ_TAG),
                 "invalid CSV must be routed to DLQ side output");
+        harness.close();
+    }
+
+    @Test
+    void csvInput_wrongTypeForAge_routesToDlq() throws Exception {
+        var harness = new OneInputStreamOperatorTestHarness<>(
+                new ProcessOperator<>(InputProcessFunctionFactory.create(CSV_CONFIG)));
+        harness.setup(ProcessedMessageSerializer.INSTANCE);
+        harness.open();
+
+        String wrongAge = "John,Doe,abc,123 Main St,Anytown,12345,USA";
+        byte[] invalidBytes = wrongAge.getBytes(StandardCharsets.UTF_8);
+        harness.processElement(ProcessedMessage.ofValue(invalidBytes), System.currentTimeMillis());
+
+        assertTrue(harness.extractOutputValues().isEmpty(),
+                "CSV with a non-numeric age must not emit a Row");
+
+        List<DlqRecord> dlqRecords = harness.getSideOutput(InputProcessFunctionFactory.DLQ_TAG).stream()
+                .map(org.apache.flink.streaming.runtime.streamrecord.StreamRecord::getValue)
+                .collect(Collectors.toList());
+        assertEquals(1, dlqRecords.size(), "invalid CSV must produce exactly one DLQ record");
+
+        DlqRecord dlq = dlqRecords.get(0);
+        assertArrayEquals(invalidBytes, dlq.getOriginalBytes(),
+                "DLQ record must preserve the invalid CSV payload");
+        assertEquals(NumberFormatException.class.getName(), dlq.getErrorClass(),
+                "wrong-type age should fail during numeric coercion");
+        assertTrue(dlq.getErrorMessage().contains("abc"),
+                "DLQ error must mention the invalid age value: " + dlq.getErrorMessage());
+
         harness.close();
     }
 
