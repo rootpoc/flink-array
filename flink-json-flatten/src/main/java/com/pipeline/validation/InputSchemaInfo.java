@@ -18,16 +18,10 @@ import java.util.Set;
  * <h2>Extracted information</h2>
  * <ul>
  *   <li><b>Array field name</b> — the first {@code "type":"array"} property at the root level.</li>
- *   <li><b>Required fields</b> — all required fields at any depth, expressed as dot-notation
- *       paths (e.g. {@code "firstName"}, {@code "address.street"}).</li>
- *   <li><b>Required item fields</b> — the same extraction applied to the array's
- *       {@code "items"} sub-schema.</li>
- * </ul>
- *
- * <h2>Composition keyword handling</h2>
- * <ul>
- *   <li>{@code allOf} — union: required fields from every branch are always required.</li>
- *   <li>{@code anyOf} / {@code oneOf} — intersection: only fields required in every branch.</li>
+ *   <li><b>Required fields</b> — fields required in all valid documents at any depth.</li>
+ *   <li><b>Required item fields</b> — the same extraction applied to the array's {@code items} sub-schema.</li>
+ *   <li><b>Conditional required fields</b> — fields required by one or more {@code anyOf}/{@code oneOf}
+ *       branches, exposed for schema introspection but not used as unconditional validation rules.</li>
  * </ul>
  */
 public final class InputSchemaInfo implements Serializable {
@@ -37,6 +31,8 @@ public final class InputSchemaInfo implements Serializable {
     private final String       arrayFieldName;
     private final List<String> requiredFields;
     private final List<String> requiredItemFields;
+    private final List<String> conditionalRequiredFields;
+    private final List<String> conditionalRequiredItemFields;
     private final Map<String, String> fieldTypes;
     private final Map<String, String> itemFieldTypes;
 
@@ -44,13 +40,17 @@ public final class InputSchemaInfo implements Serializable {
             String arrayFieldName,
             List<String> requiredFields,
             List<String> requiredItemFields,
+            List<String> conditionalRequiredFields,
+            List<String> conditionalRequiredItemFields,
             Map<String, String> fieldTypes,
             Map<String, String> itemFieldTypes) {
-        this.arrayFieldName     = arrayFieldName;
-        this.requiredFields     = List.copyOf(requiredFields);
+        this.arrayFieldName = arrayFieldName;
+        this.requiredFields = List.copyOf(requiredFields);
         this.requiredItemFields = List.copyOf(requiredItemFields);
-        this.fieldTypes         = Map.copyOf(fieldTypes);
-        this.itemFieldTypes     = Map.copyOf(itemFieldTypes);
+        this.conditionalRequiredFields = List.copyOf(conditionalRequiredFields);
+        this.conditionalRequiredItemFields = List.copyOf(conditionalRequiredItemFields);
+        this.fieldTypes = Map.copyOf(fieldTypes);
+        this.itemFieldTypes = Map.copyOf(itemFieldTypes);
     }
 
     // ── Factory ───────────────────────────────────────────────────────────────
@@ -65,9 +65,18 @@ public final class InputSchemaInfo implements Serializable {
         String arrayFieldName = findArrayField(schema);
         List<String> required = extractRequired(schema, schema);
         List<String> itemRequired = extractItemRequired(schema, arrayFieldName);
+        List<String> conditionalRequired = extractConditionalRequired(schema, schema);
+        List<String> conditionalItemRequired = extractConditionalItemRequired(schema, arrayFieldName);
         Map<String, String> fieldTypes = extractLeafTypes(schema, schema);
         Map<String, String> itemFieldTypes = extractItemLeafTypes(schema, arrayFieldName);
-        return new InputSchemaInfo(arrayFieldName, required, itemRequired, fieldTypes, itemFieldTypes);
+        return new InputSchemaInfo(
+                arrayFieldName,
+                required,
+                itemRequired,
+                conditionalRequired,
+                conditionalItemRequired,
+                fieldTypes,
+                itemFieldTypes);
     }
 
     // ── Accessors ─────────────────────────────────────────────────────────────
@@ -76,6 +85,8 @@ public final class InputSchemaInfo implements Serializable {
     public String       getArrayFieldName()     { return arrayFieldName; }
     public List<String> getRequiredFields()     { return requiredFields; }
     public List<String> getRequiredItemFields() { return requiredItemFields; }
+    public List<String> getConditionalRequiredFields() { return conditionalRequiredFields; }
+    public List<String> getConditionalRequiredItemFields() { return conditionalRequiredItemFields; }
     public Map<String, String> getFieldTypes() { return fieldTypes; }
     public Map<String, String> getItemFieldTypes() { return itemFieldTypes; }
 
@@ -84,6 +95,8 @@ public final class InputSchemaInfo implements Serializable {
         return "InputSchemaInfo{arrayField='" + arrayFieldName
                 + "', required=" + requiredFields
                 + ", requiredItems=" + requiredItemFields
+                + ", conditionalRequired=" + conditionalRequiredFields
+                + ", conditionalRequiredItems=" + conditionalRequiredItemFields
                 + ", fieldTypes=" + fieldTypes
                 + ", itemFieldTypes=" + itemFieldTypes + '}';
     }
@@ -110,6 +123,12 @@ public final class InputSchemaInfo implements Serializable {
         return new ArrayList<>(result);
     }
 
+    private static List<String> extractConditionalRequired(JsonNode schema, JsonNode schemaRoot) {
+        Set<String> result = new LinkedHashSet<>();
+        collectConditionalRequiredPaths(schema, schemaRoot, "", result);
+        return new ArrayList<>(result);
+    }
+
     private static void collectRequiredPaths(JsonNode schema, JsonNode schemaRoot, String prefix, Set<String> result) {
         JsonNode resolved = resolveLocalRef(schema, schemaRoot);
         if (resolved != null) {
@@ -126,10 +145,15 @@ public final class InputSchemaInfo implements Serializable {
         if (props.isObject()) {
             props.fields().forEachRemaining(entry -> {
                 JsonNode propSchema = entry.getValue();
-                if (shouldTraverseObjectSchema(propSchema)) {
+                if (shouldTraverseSchema(propSchema)) {
                     collectRequiredPaths(propSchema, schemaRoot, prefix + entry.getKey() + ".", result);
                 }
             });
+        }
+
+        JsonNode items = schema.path("items");
+        if (!items.isMissingNode()) {
+            collectRequiredPaths(items, schemaRoot, prefix, result);
         }
 
         JsonNode allOf = schema.path("allOf");
@@ -141,6 +165,46 @@ public final class InputSchemaInfo implements Serializable {
             JsonNode composition = schema.path(key);
             if (composition.isArray() && !composition.isEmpty()) {
                 result.addAll(intersectRequired(composition, schemaRoot, prefix));
+            }
+        }
+    }
+
+    private static void collectConditionalRequiredPaths(JsonNode schema, JsonNode schemaRoot, String prefix, Set<String> result) {
+        JsonNode resolved = resolveLocalRef(schema, schemaRoot);
+        if (resolved != null) {
+            collectConditionalRequiredPaths(resolved, schemaRoot, prefix, result);
+            return;
+        }
+
+        JsonNode props = schema.path("properties");
+        if (props.isObject()) {
+            props.fields().forEachRemaining(entry -> {
+                JsonNode propSchema = entry.getValue();
+                if (shouldTraverseSchema(propSchema)) {
+                    collectConditionalRequiredPaths(propSchema, schemaRoot, prefix + entry.getKey() + ".", result);
+                }
+            });
+        }
+
+        JsonNode items = schema.path("items");
+        if (!items.isMissingNode()) {
+            collectConditionalRequiredPaths(items, schemaRoot, prefix, result);
+        }
+
+        JsonNode allOf = schema.path("allOf");
+        if (allOf.isArray()) {
+            allOf.forEach(sub -> collectConditionalRequiredPaths(sub, schemaRoot, prefix, result));
+        }
+
+        for (String key : new String[]{"anyOf", "oneOf"}) {
+            JsonNode composition = schema.path(key);
+            if (composition.isArray()) {
+                composition.forEach(branch -> {
+                    Set<String> branchRequired = new LinkedHashSet<>();
+                    collectRequiredPaths(branch, schemaRoot, prefix, branchRequired);
+                    result.addAll(branchRequired);
+                    collectConditionalRequiredPaths(branch, schemaRoot, prefix, result);
+                });
             }
         }
     }
@@ -161,10 +225,14 @@ public final class InputSchemaInfo implements Serializable {
 
     private static List<String> extractItemRequired(JsonNode schema, String arrayFieldName) {
         if (arrayFieldName == null) return List.of();
-        JsonNode items = schema.path("properties")
-                               .path(arrayFieldName)
-                               .path("items");
+        JsonNode items = schema.path("properties").path(arrayFieldName).path("items");
         return extractRequired(items, schema);
+    }
+
+    private static List<String> extractConditionalItemRequired(JsonNode schema, String arrayFieldName) {
+        if (arrayFieldName == null) return List.of();
+        JsonNode items = schema.path("properties").path(arrayFieldName).path("items");
+        return extractConditionalRequired(items, schema);
     }
 
     private static Map<String, String> extractLeafTypes(JsonNode schema, JsonNode schemaRoot) {
@@ -175,9 +243,7 @@ public final class InputSchemaInfo implements Serializable {
 
     private static Map<String, String> extractItemLeafTypes(JsonNode schema, String arrayFieldName) {
         if (arrayFieldName == null) return Map.of();
-        JsonNode items = schema.path("properties")
-                .path(arrayFieldName)
-                .path("items");
+        JsonNode items = schema.path("properties").path(arrayFieldName).path("items");
         return extractLeafTypes(items, schema);
     }
 
@@ -193,16 +259,19 @@ public final class InputSchemaInfo implements Serializable {
             props.fields().forEachRemaining(entry -> {
                 JsonNode propSchema = entry.getValue();
                 String path = prefix + entry.getKey();
-                if (shouldTraverseObjectSchema(propSchema)) {
-                    collectLeafTypes(propSchema, schemaRoot, path + ".", result);
-                    return;
-                }
-
                 String type = propSchema.path("type").asText();
                 if (!type.isBlank()) {
                     result.putIfAbsent(path, type);
                 }
+                if (shouldTraverseSchema(propSchema)) {
+                    collectLeafTypes(propSchema, schemaRoot, path + ".", result);
+                }
             });
+        }
+
+        JsonNode items = schema.path("items");
+        if (!items.isMissingNode()) {
+            collectLeafTypes(items, schemaRoot, prefix, result);
         }
 
         JsonNode allOf = schema.path("allOf");
@@ -218,9 +287,11 @@ public final class InputSchemaInfo implements Serializable {
         }
     }
 
-    private static boolean shouldTraverseObjectSchema(JsonNode schema) {
+    private static boolean shouldTraverseSchema(JsonNode schema) {
         return "object".equals(schema.path("type").asText())
+                || "array".equals(schema.path("type").asText())
                 || schema.has("properties")
+                || schema.has("items")
                 || schema.has("$ref")
                 || schema.has("allOf")
                 || schema.has("anyOf")

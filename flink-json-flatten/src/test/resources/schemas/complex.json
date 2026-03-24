@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/persons-with-grades-array.schema.json",
+  "title": "Persons List with Metadata",
+  "type": "object",
+  "properties": {
+    "metadata": {
+      "type": "object",
+      "properties": {
+        "totalCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "page": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "pageSize": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "apiVersion": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+$"
+        }
+      },
+      "required": ["totalCount", "page", "pageSize", "timestamp", "apiVersion"],
+      "additionalProperties": false
+    },
+    "persons": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/person"
+      },
+      "minItems": 0
+    }
+  },
+  "$defs": {
+    "person": {
+      "type": "object",
+      "properties": {
+        "firstName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "lastName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "age": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 150
+        },
+        "grades": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "oneOf": [
+              {
+                "properties": {
+                  "school": {
+                    "$ref": "#/$defs/grades"
+                  }
+                },
+                "required": ["school"],
+                "additionalProperties": false
+              },
+              {
+                "properties": {
+                  "highschool": {
+                    "$ref": "#/$defs/grades"
+                  }
+                },
+                "required": ["highschool"],
+                "additionalProperties": false
+              },
+              {
+                "properties": {
+                  "mathGarde": { "type": "integer" },
+                  "historyGrade": { "type": "integer" }
+                },
+                "required": ["mathGarde", "historyGrade"],
+                "additionalProperties": false
+              }
+            ]
+          }
+        },
+        "address": {
+          "type": "object",
+          "properties": {
+            "street": { "type": "string", "minLength": 1 },
+            "city": { "type": "string", "minLength": 1 },
+            "postalCode": { "type": "string", "pattern": "^[0-9]{5}$" },
+            "country": { "type": "string", "minLength": 1 }
+          },
+          "required": ["street", "city", "postalCode", "country"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["firstName", "lastName", "address"],
+      "additionalProperties": false
+    },
+    "grades": {
+      "type": "object",
+      "properties": {
+        "mathGarde": { "type": "integer" },
+        "historyGrade": { "type": "integer" }
+      },
+      "required": ["mathGarde", "historyGrade"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["metadata", "persons"],
+  "additionalProperties": false
+}
