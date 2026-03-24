@@ -98,6 +98,9 @@ public final class PipelineConfig implements Serializable {
      */
     private final boolean splitEnabled;
 
+    /** Where page splitting should be executed when enabled. */
+    private final SplitStage splitStage;
+
     /**
      * Name of the flat-Row field whose array should be paginated by {@code SplitFunction}.
      * Corresponds to the top-level array key in the flattened Row (e.g. {@code "persons"}).
@@ -135,6 +138,7 @@ public final class PipelineConfig implements Serializable {
         this.uppercaseFieldKeys   = List.copyOf(b.uppercaseFieldKeys);
         this.splittingPageSize    = b.splittingPageSize;
         this.splitEnabled         = b.splitEnabled;
+        this.splitStage           = b.splitStage;
         this.splitField           = b.splitField;
         this.nullHandling         = b.nullHandling;
     }
@@ -171,6 +175,7 @@ public final class PipelineConfig implements Serializable {
                 .uppercaseFieldKeys(parseList(p.get("processing.uppercase-field-keys", "person.name,name")))
                 .splittingPageSize(p.getInt("splitting.page-size", 100))
                 .splitEnabled(p.getBoolean("processing.split-enabled", true))
+                .splitStage(SplitStage.valueOf(p.get("processing.split-stage", "PIPELINE").trim().toUpperCase()))
                 .splitField(p.get("processing.split-field", "persons"))
                 .nullHandling(NullHandling.valueOf(p.get("flatten.null-handling", "INCLUDE")))
                 .build();
@@ -204,6 +209,7 @@ public final class PipelineConfig implements Serializable {
     public List<String> getUppercaseFieldKeys()      { return uppercaseFieldKeys; }
     public int getSplittingPageSize()                { return splittingPageSize; }
     public boolean isSplitEnabled()                  { return splitEnabled; }
+    public SplitStage getSplitStage()                { return splitStage; }
     public String getSplitField()                    { return splitField; }
     public NullHandling getNullHandling()            { return nullHandling; }
 
@@ -226,6 +232,13 @@ public final class PipelineConfig implements Serializable {
         EXCLUDE,
         /** Replace null with the empty string "". */
         REPLACE_EMPTY_STRING
+    }
+
+    public enum SplitStage {
+        /** Perform page splitting in the main pipeline after input processing. */
+        PIPELINE,
+        /** Perform page splitting inside the input process function itself. */
+        INPUT
     }
 
     // ── Builder ───────────────────────────────────────────────────────────────
@@ -253,6 +266,7 @@ public final class PipelineConfig implements Serializable {
         private List<String> uppercaseFieldKeys = List.of("person.name", "name");
         private int    splittingPageSize        = 100;
         private boolean splitEnabled            = true;
+        private SplitStage splitStage           = SplitStage.PIPELINE;
         private String splitField               = "persons";
         private NullHandling nullHandling       = NullHandling.INCLUDE;
 
@@ -278,6 +292,7 @@ public final class PipelineConfig implements Serializable {
         public Builder uppercaseFieldKeys(List<String> v) { this.uppercaseFieldKeys = v; return this; }
         public Builder splittingPageSize(int v)        { this.splittingPageSize = v;    return this; }
         public Builder splitEnabled(boolean v)         { this.splitEnabled = v;         return this; }
+        public Builder splitStage(SplitStage v)        { this.splitStage = v;           return this; }
         public Builder splitField(String v)            { this.splitField = v;           return this; }
         public Builder nullHandling(NullHandling v)    { this.nullHandling = v;         return this; }
 
@@ -298,6 +313,7 @@ public final class PipelineConfig implements Serializable {
                 + ", outputSchemaResource='" + outputSchemaResource + '\''
                 + ", parallelism=" + parallelism
                 + ", splitEnabled=" + splitEnabled
+                + ", splitStage=" + splitStage
                 + ", splitField='" + splitField + '\''
                 + ", nullHandling=" + nullHandling
                 + '}';

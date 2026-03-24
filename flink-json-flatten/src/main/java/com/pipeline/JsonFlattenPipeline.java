@@ -2,7 +2,6 @@ package com.pipeline;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.pipeline.common.DlqRecord;
-import com.pipeline.common.PaginationSchema;
 import com.pipeline.common.ProcessedMessage;
 import com.pipeline.common.SerializedMessage;
 import com.pipeline.common.typeinfo.ProcessedMessageTypeInfo;
@@ -11,7 +10,7 @@ import com.pipeline.deserialization.KafkaEnvelopeDeserializer;
 import com.pipeline.processing.UpperCaseMapFunction;
 import com.pipeline.serialization.DlqSerializationSchema;
 import com.pipeline.serialization.SerializedMessageKafkaRecordSerializationSchema;
-import com.pipeline.splitting.SplitFunction;
+import com.pipeline.splitting.SplitFunctionFactory;
 import com.pipeline.splitting.schema.SchemaAnalyzer;
 import org.apache.flink.api.java.utils.ParameterTool;
 import org.apache.flink.configuration.ExternalizedCheckpointRetention;
@@ -113,16 +112,6 @@ public final class JsonFlattenPipeline {
                 .setParallelism(P)
                 .uid("kafka-source");
 
-        PaginationSchema outputSchema = null;
-        if (config.isSplitEnabled()) {
-            try {
-                outputSchema = SchemaAnalyzer.analyze(loadSchema(config.getOutputSchemaResource()));
-            } catch (Exception e) {
-                throw new RuntimeException("Failed to load/analyze output schema: "
-                        + config.getOutputSchemaResource(), e);
-            }
-        }
-
         SingleOutputStreamOperator<ProcessedMessage> rowStream = rawStream
                 .process(InputProcessFunctionFactory.create(config))
                 .name("input-process")
@@ -148,22 +137,26 @@ public final class JsonFlattenPipeline {
                 .returns(ProcessedMessageTypeInfo.INSTANCE);
 
         final DataStream<ProcessedMessage> preserializeStream;
-        if (config.isSplitEnabled()) {
-            LOG.info("Split enabled on field '{}', pageSize={}, inputFormat={}, outputFormat={}, inputSchema='{}', outputSchema='{}'",
-                    config.getSplitField(), config.getSplittingPageSize(),
+        if (SplitFunctionFactory.shouldSplitInPipeline(config)) {
+            LOG.info("Split enabled on field '{}' in {} stage, pageSize={}, inputFormat={}, outputFormat={}, inputSchema='{}', outputSchema='{}'",
+                    config.getSplitField(), config.getSplitStage(), config.getSplittingPageSize(),
                     config.getInputFormat(), config.getOutputFormat(),
                     config.getInputSchemaResource(), config.getOutputSchemaResource());
-            preserializeStream = processedStream
-                    .flatMap(new SplitFunction(
-                            outputSchema,
-                            config.getSplittingPageSize(),
-                            config.getSplitField()))
-                    .name("split-pages")
-                    .uid("split-pages")
-                    .setParallelism(P)
-                    .returns(ProcessedMessageTypeInfo.INSTANCE);
+            try {
+                preserializeStream = processedStream
+                        .flatMap(SplitFunctionFactory.create(config))
+                        .name("split-pages")
+                        .uid("split-pages")
+                        .setParallelism(P)
+                        .returns(ProcessedMessageTypeInfo.INSTANCE);
+            } catch (Exception e) {
+                throw new RuntimeException("Failed to initialize split function from output schema: "
+                        + config.getOutputSchemaResource(), e);
+            }
         } else {
-            LOG.info("Split disabled — records flow directly to output serialization");
+            LOG.info("Split {} — records flow directly to output serialization after stage {}",
+                    config.isSplitEnabled() ? "handled upstream" : "disabled",
+                    config.getSplitStage());
             preserializeStream = processedStream;
         }
 
@@ -198,8 +191,8 @@ public final class JsonFlattenPipeline {
                 .uid("kafka-sink")
                 .setParallelism(P);
 
-        LOG.info("Pipeline built: parallelism={}, inputFormat={}, outputFormat={}, splitEnabled={}, splitField='{}', {}->{} (dlq={})",
-                P, config.getInputFormat(), config.getOutputFormat(), config.isSplitEnabled(),
+        LOG.info("Pipeline built: parallelism={}, inputFormat={}, outputFormat={}, splitEnabled={}, splitStage={}, splitField='{}', {}->{} (dlq={})",
+                P, config.getInputFormat(), config.getOutputFormat(), config.isSplitEnabled(), config.getSplitStage(),
                 config.getSplitField(), config.getInputTopic(), config.getOutputTopic(), config.getDlqTopic());
     }
 

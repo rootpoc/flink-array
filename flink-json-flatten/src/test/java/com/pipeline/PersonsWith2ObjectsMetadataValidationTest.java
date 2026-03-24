@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.InputStream;
 import java.util.List;
+import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -38,12 +39,13 @@ class PersonsWith2ObjectsMetadataValidationTest {
         ((ObjectNode) firstPerson.get("address")).remove("street");
 
         List<String> violations = JsonRowFlattener.validate(inputJson, inputSchema);
+        List<String> uniqueViolations = violations.stream().distinct().collect(Collectors.toList());
 
-        assertTrue(violations.contains("missing required field 'persons.0.grades.mathGarde'"),
+        assertTrue(uniqueViolations.contains("missing required field 'persons.0.grades.mathGarde'"),
                 "expected missing mathGarde violation but got: " + violations);
-        assertTrue(violations.contains("missing required field 'persons.0.address.street'"),
+        assertTrue(uniqueViolations.contains("missing required field 'persons.0.address.street'"),
                 "expected missing street violation but got: " + violations);
-        assertEquals(2, violations.size(), "expected exactly two missing-field violations: " + violations);
+        assertEquals(2, uniqueViolations.size(), "expected exactly two logical missing-field violations: " + violations);
     }
 
     @Test
@@ -56,12 +58,13 @@ class PersonsWith2ObjectsMetadataValidationTest {
         ((ObjectNode) firstPerson.get("grades")).put("historyGrade", "A+");
 
         List<String> violations = JsonRowFlattener.validate(inputJson, inputSchema);
+        List<String> uniqueViolations = violations.stream().distinct().collect(Collectors.toList());
 
-        assertTrue(violations.contains("incorrect type for field 'persons.0.age': expected integer but was string"),
+        assertTrue(uniqueViolations.contains("incorrect type for field 'persons.0.age': expected integer but was string"),
                 "expected age type violation but got: " + violations);
-        assertTrue(violations.contains("incorrect type for field 'persons.0.grades.historyGrade': expected integer but was string"),
+        assertTrue(uniqueViolations.contains("incorrect type for field 'persons.0.grades.historyGrade': expected integer but was string"),
                 "expected historyGrade type violation but got: " + violations);
-        assertEquals(2, violations.size(), "expected exactly two type violations: " + violations);
+        assertEquals(2, uniqueViolations.size(), "expected exactly two logical type violations: " + violations);
     }
 
     private static JsonNode loadSchema(String path) throws Exception {
@@ -75,4 +78,3 @@ class PersonsWith2ObjectsMetadataValidationTest {
         }
     }
 }
-

@@ -9,6 +9,7 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.Iterator;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 
@@ -20,60 +21,106 @@ final class JsonRowFlattener {
     static List<String> validate(JsonNode root, InputSchemaInfo inputSchema) {
         List<String> violations = new ArrayList<>();
         for (String path : inputSchema.getRequiredFields()) {
-            if (isMissingRequired(root, path)) {
-                violations.add("missing required field '" + path + "'");
-            }
+            collectMissingRequiredPaths(root, path, "", violations);
         }
         validateFieldTypes(root, inputSchema.getFieldTypes(), "", violations);
-
-        String arrayFieldName = inputSchema.getArrayFieldName();
-        JsonNode items = arrayFieldName != null ? root.path(arrayFieldName) : null;
-        if (items != null && items.isArray()) {
-            for (int i = 0; i < items.size(); i++) {
-                JsonNode item = items.get(i);
-                for (String path : inputSchema.getRequiredItemFields()) {
-                    if (isMissingRequired(item, path)) {
-                        violations.add("missing required field '" + arrayFieldName + "." + i + "." + path + "'");
-                    }
-                }
-                validateFieldTypes(item, inputSchema.getItemFieldTypes(), arrayFieldName + "." + i + ".", violations);
-            }
-        }
-        return violations;
+        return new ArrayList<>(new LinkedHashSet<>(violations));
     }
 
     static boolean isMissingRequired(JsonNode node, String dotPath) {
-        String[] parts = dotPath.split("\\.");
-        JsonNode current = node;
-        for (int i = 0; i < parts.length - 1; i++) {
-            current = current.path(parts[i]);
-            if (current.isMissingNode()) return false;
+        List<String> missing = new ArrayList<>(1);
+        collectMissingRequiredPaths(node, dotPath, "", missing);
+        return !missing.isEmpty();
+    }
+
+    private static void collectMissingRequiredPaths(JsonNode node,
+                                                    String dotPath,
+                                                    String pathPrefix,
+                                                    List<String> missingPaths) {
+        collectMissingRequiredPaths(node, dotPath.split("\\."), 0, pathPrefix, missingPaths);
+    }
+
+    private static void collectMissingRequiredPaths(JsonNode node,
+                                                    String[] parts,
+                                                    int index,
+                                                    String currentPath,
+                                                    List<String> missingPaths) {
+        if (index >= parts.length || node == null || node.isMissingNode()) {
+            return;
         }
-        return current.path(parts[parts.length - 1]).isMissingNode();
+
+        if (node.isArray()) {
+            for (int i = 0; i < node.size(); i++) {
+                String arrayPath = currentPath.isEmpty() ? String.valueOf(i) : currentPath + "." + i;
+                collectMissingRequiredPaths(node.get(i), parts, index, arrayPath, missingPaths);
+            }
+            return;
+        }
+
+        String part = parts[index];
+        JsonNode child = node.path(part);
+        String nextPath = currentPath.isEmpty() ? part : currentPath + "." + part;
+
+        if (index == parts.length - 1) {
+            if (child.isMissingNode()) {
+                missingPaths.add("missing required field '" + nextPath + "'");
+            }
+            return;
+        }
+
+        if (child.isMissingNode()) {
+            return;
+        }
+
+        collectMissingRequiredPaths(child, parts, index + 1, nextPath, missingPaths);
     }
 
     private static void validateFieldTypes(JsonNode node,
-                                           java.util.Map<String, String> fieldTypes,
+                                           Map<String, String> fieldTypes,
                                            String pathPrefix,
                                            List<String> violations) {
-        fieldTypes.forEach((path, expectedType) -> {
-            JsonNode value = getNodeAtPath(node, path);
-            if (value.isMissingNode() || value.isNull()) return;
-            if (matchesType(value, expectedType)) return;
-            violations.add("incorrect type for field '" + pathPrefix + path + "': expected "
-                    + expectedType + " but was " + actualType(value));
-        });
+        fieldTypes.forEach((path, expectedType) ->
+                collectTypeViolations(node, path.split("\\."), 0, pathPrefix, expectedType, violations));
     }
 
-    private static JsonNode getNodeAtPath(JsonNode node, String dotPath) {
-        JsonNode current = node;
-        for (String part : dotPath.split("\\.")) {
-            current = current.path(part);
-            if (current.isMissingNode()) {
-                return current;
-            }
+    private static void collectTypeViolations(JsonNode node,
+                                              String[] parts,
+                                              int index,
+                                              String currentPath,
+                                              String expectedType,
+                                              List<String> violations) {
+        if (node == null || node.isMissingNode() || node.isNull()) {
+            return;
         }
-        return current;
+
+        if (node.isArray()) {
+            for (int i = 0; i < node.size(); i++) {
+                String arrayPath = currentPath.isEmpty() ? String.valueOf(i) : currentPath + "." + i;
+                collectTypeViolations(node.get(i), parts, index, arrayPath, expectedType, violations);
+            }
+            return;
+        }
+
+        if (index >= parts.length) {
+            return;
+        }
+
+        String part = parts[index];
+        JsonNode child = node.path(part);
+        String nextPath = currentPath.isEmpty() ? part : currentPath + "." + part;
+        if (child.isMissingNode() || child.isNull()) {
+            return;
+        }
+
+        if (index == parts.length - 1) {
+            if (!matchesType(child, expectedType)) {
+                violations.add("incorrect type for field '" + nextPath + "': expected "
+                        + expectedType + " but was " + actualType(child));
+            }
+            return;
+        }
+
+        collectTypeViolations(child, parts, index + 1, nextPath, expectedType, violations);
     }
 
     private static boolean matchesType(JsonNode value, String expectedType) {

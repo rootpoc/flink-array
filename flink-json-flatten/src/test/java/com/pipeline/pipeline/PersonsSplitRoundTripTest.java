@@ -67,6 +67,15 @@ class PersonsSplitRoundTripTest {
     /** Input schema derived by analyzing {@code csv-flat-person-required.schema.json}. */
     private static final PipelineConfig FLAT_JSON_CONFIG;
 
+    /** Raw bytes of the complex JSON fixture loaded from classpath. */
+    private static final byte[] COMPLEX_BYTES;
+
+    /** Parsed complex JSON, used for structural comparison in the complex split test. */
+    private static final JsonNode COMPLEX_JSON_NODE;
+
+    /** Config that performs person paging during input processing for complex input. */
+    private static final PipelineConfig COMPLEX_INPUT_SPLIT_CONFIG;
+
     static {
         try {
             PERSONS_BYTES     = loadResource("input/persons-with-metadata.json");
@@ -106,6 +115,21 @@ class PersonsSplitRoundTripTest {
                     .inputSchemaResource("schemas/csv-flat-person-required.schema.json")
                     .outputSchemaResource("schemas/csv-flat-person-required.schema.json")
                     .splitEnabled(false)
+                    .nullHandling(PipelineConfig.NullHandling.INCLUDE)
+                    .build();
+
+            COMPLEX_BYTES = loadResource("input/complex2-paging.json");
+            COMPLEX_JSON_NODE = MAPPER.readTree(COMPLEX_BYTES);
+
+            COMPLEX_INPUT_SPLIT_CONFIG = new PipelineConfig.Builder()
+                    .inputFormat(PipelineConfig.InputFormat.JSON)
+                    .outputFormat(PipelineConfig.OutputFormat.JSON)
+                    .inputSchemaResource("schemas/complex2.json")
+                    .outputSchemaResource("schemas/output-persons-paged.schema.json")
+                    .splittingPageSize(1)
+                    .splitEnabled(true)
+                    .splitStage(PipelineConfig.SplitStage.INPUT)
+                    .splitField("persons")
                     .nullHandling(PipelineConfig.NullHandling.INCLUDE)
                     .build();
         } catch (Exception e) {
@@ -224,6 +248,54 @@ class PersonsSplitRoundTripTest {
         }
 
         System.out.println("=== Test 1 PASSED ===\n");
+    }
+    /**
+     * Splits the {@code persons} array into pages of 1 item each, yielding two
+     * output pages (one per person).
+     */
+    @Test
+    void withSplit_rowIsCorrect_complexInput() throws Exception {
+        System.out.println("\n=== Complex input schema analysis ===");
+        System.out.println("INPUT_CONFIG  : " + COMPLEX_INPUT_SPLIT_CONFIG);
+        System.out.println("OUTPUT_SCHEMA : " + OUTPUT_SCHEMA);
+
+        List<ProcessedMessage> pageMessages = runInput(COMPLEX_INPUT_SPLIT_CONFIG, COMPLEX_BYTES);
+        List<Row> rows = pageMessages.stream().map(ProcessedMessage::getPayload).collect(Collectors.toList());
+
+        System.out.println("\n=== Complex input split during input processing (pageSize=1) ===");
+        System.out.println("Pages produced : " + rows.size());
+        assertEquals(2, rows.size(), "input-stage splitting must emit one message per person");
+
+        Row page0 = rows.get(0);
+        printRow("Complex page 0", page0);
+        assertEquals(0, page0.getField(OUTPUT_SCHEMA.getIndexFieldName()), "page 0: metadata.page");
+        assertEquals(2, page0.getField(OUTPUT_SCHEMA.getTotalFieldName()), "page 0: metadata.totalCount");
+        assertEquals(1, page0.getField(OUTPUT_SCHEMA.getCountFieldName()), "page 0: count");
+        assertEquals("2026-03-14T17:57:00Z", page0.getField("metadata.timestamp"));
+        assertEquals("John", page0.getField("persons.0.firstName"));
+        assertEquals("Doe", page0.getField("persons.0.lastName"));
+        assertEquals(35L, page0.getField("persons.0.age"));
+        assertEquals(91L, page0.getField("persons.0.grades.0.school.mathGarde"));
+        assertEquals(82L, page0.getField("persons.0.grades.0.highschool.historyGrade"));
+        assertEquals(96L, page0.getField("persons.0.grades.1.mathGarde"));
+        assertEquals(86L, page0.getField("persons.0.grades.1.historyGrade"));
+        assertNull(page0.getField("persons.1.firstName"), "page 0 must not contain the next person after input-stage split");
+
+        Row page1 = rows.get(1);
+        printRow("Complex page 1", page1);
+        assertEquals(1, page1.getField(OUTPUT_SCHEMA.getIndexFieldName()), "page 1: metadata.page");
+        assertEquals(2, page1.getField(OUTPUT_SCHEMA.getTotalFieldName()), "page 1: metadata.totalCount");
+        assertEquals(1, page1.getField(OUTPUT_SCHEMA.getCountFieldName()), "page 1: count");
+        assertEquals("2026-03-14T17:57:00Z", page1.getField("metadata.timestamp"));
+        assertEquals("Jane", page1.getField("persons.0.firstName"));
+        assertEquals("Smith", page1.getField("persons.0.lastName"));
+        assertEquals(31L, page1.getField("persons.0.age"));
+        assertEquals(71L, page1.getField("persons.0.grades.0.school.mathGarde"));
+        assertEquals(62L, page1.getField("persons.0.grades.0.highschool.historyGrade"));
+        assertEquals(76L, page1.getField("persons.0.grades.1.mathGarde"));
+        assertEquals(66L, page1.getField("persons.0.grades.1.historyGrade"));
+
+        assertEquals(2, COMPLEX_JSON_NODE.path("persons").size(), "complex fixture should keep two persons at the source");
     }
 
     // ══════════════════════════════════════════════════════════════════════════

@@ -4,6 +4,7 @@ import com.pipeline.common.ProcessedMessage;
 import com.pipeline.common.typeinfo.ProcessedMessageTypeInfo;
 import com.pipeline.config.PipelineConfig;
 import com.pipeline.deserialization.CsvDeserializer;
+import com.pipeline.splitting.SplitFunctionFactory;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.java.typeutils.ResultTypeQueryable;
 import org.apache.flink.configuration.Configuration;
@@ -20,12 +21,16 @@ public final class CsvInputProcessFunction
     private static final Logger LOG = LoggerFactory.getLogger(CsvInputProcessFunction.class);
     private final PipelineConfig config;
     private transient CsvDeserializer deserializer;
+    private transient SplitFunctionFactory.RuntimeSplitter inputSplitter;
     public CsvInputProcessFunction(PipelineConfig config) {
         this.config = config;
     }
     @Override
     public void open(Configuration params) throws Exception {
         deserializer = new CsvDeserializer(config.getInputSchemaResource());
+        inputSplitter = SplitFunctionFactory.shouldSplitInInput(config)
+                ? SplitFunctionFactory.createRuntime(config)
+                : null;
         LOG.info("CsvInputProcessFunction opened: schema='{}'", config.getInputSchemaResource());
     }
     @Override
@@ -38,7 +43,14 @@ public final class CsvInputProcessFunction
         }
         try {
             Row row = deserializer.deserialize(bytes);
-            out.collect(msg.withPayload(row));
+            ProcessedMessage processed = msg.withPayload(row);
+            if (inputSplitter != null) {
+                for (ProcessedMessage splitMessage : inputSplitter.split(processed)) {
+                    out.collect(splitMessage);
+                }
+            } else {
+                out.collect(processed);
+            }
         } catch (Exception e) {
             LOG.warn("Failed to process CSV message ({} bytes): {}", bytes.length, e.getMessage());
             ctx.output(InputProcessFunctionFactory.DLQ_TAG, DlqRecord.of(msg, e));

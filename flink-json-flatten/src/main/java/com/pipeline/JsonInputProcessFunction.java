@@ -6,6 +6,7 @@ import com.pipeline.common.DlqRecord;
 import com.pipeline.common.ProcessedMessage;
 import com.pipeline.common.typeinfo.ProcessedMessageTypeInfo;
 import com.pipeline.config.PipelineConfig;
+import com.pipeline.splitting.SplitFunctionFactory;
 import com.pipeline.splitting.schema.SchemaAnalyzer;
 import com.pipeline.validation.InputSchemaInfo;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
@@ -28,6 +29,7 @@ public final class JsonInputProcessFunction
     private final PipelineConfig config;
     private transient ThreadLocal<ObjectMapper> mapperLocal;
     private transient InputSchemaInfo inputSchema;
+    private transient SplitFunctionFactory.RuntimeSplitter inputSplitter;
 
     public JsonInputProcessFunction(PipelineConfig config) {
         this.config = config;
@@ -38,6 +40,9 @@ public final class JsonInputProcessFunction
         mapperLocal = ThreadLocal.withInitial(ObjectMapper::new);
         JsonNode schema = SchemaAnalyzer.loadSchema(config.getInputSchemaResource());
         inputSchema = InputSchemaInfo.analyze(schema);
+        inputSplitter = SplitFunctionFactory.shouldSplitInInput(config)
+                ? SplitFunctionFactory.createRuntime(config)
+                : null;
         LOG.info("JsonInputProcessFunction opened: schema='{}', nullHandling={}",
                 config.getInputSchemaResource(), config.getNullHandling());
     }
@@ -62,7 +67,14 @@ public final class JsonInputProcessFunction
 
             Row row = Row.withNames();
             JsonRowFlattener.flattenInto(root, "", row, config.getNullHandling());
-            out.collect(msg.withPayload(row));
+            ProcessedMessage processed = msg.withPayload(row);
+            if (inputSplitter != null) {
+                for (ProcessedMessage splitMessage : inputSplitter.split(processed)) {
+                    out.collect(splitMessage);
+                }
+            } else {
+                out.collect(processed);
+            }
         } catch (Exception e) {
             LOG.warn("Failed to process JSON message ({} bytes): {}", bytes.length, e.getMessage());
             ctx.output(InputProcessFunctionFactory.DLQ_TAG, DlqRecord.of(msg, e));

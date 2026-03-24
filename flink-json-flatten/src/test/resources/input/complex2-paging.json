@@ -1,0 +1,86 @@
+{
+  "metadata": {
+    "totalCount": 2,
+    "page": 1,
+    "pageSize": 2,
+    "timestamp": "2026-03-14T17:57:00Z",
+    "apiVersion": "1.0"
+  },
+  "persons": [
+    {
+      "firstName": "John",
+      "lastName": "Doe",
+      "age": 35,
+      "grades": [
+        {
+          "school": {
+            "mathGarde": 91,
+            "historyGrade": 81
+          },
+          "highschool": {
+            "mathGarde": 92,
+            "historyGrade": 82
+          },
+          "mathGarde": 93,
+          "historyGrade": 83
+        },
+        {
+          "school": {
+            "mathGarde": 94,
+            "historyGrade": 84
+          },
+          "highschool": {
+            "mathGarde": 95,
+            "historyGrade": 85
+          },
+          "mathGarde": 96,
+          "historyGrade": 86
+        }
+      ],
+      "address": {
+        "street": "123 Main St",
+        "city": "Anytown",
+        "postalCode": "12345",
+        "country": "USA"
+      }
+    },
+    {
+      "firstName": "Jane",
+      "lastName": "Smith",
+      "age": 31,
+      "grades": [
+        {
+          "school": {
+            "mathGarde": 71,
+            "historyGrade": 61
+          },
+          "highschool": {
+            "mathGarde": 72,
+            "historyGrade": 62
+          },
+          "mathGarde": 73,
+          "historyGrade": 63
+        },
+        {
+          "school": {
+            "mathGarde": 74,
+            "historyGrade": 64
+          },
+          "highschool": {
+            "mathGarde": 75,
+            "historyGrade": 65
+          },
+          "mathGarde": 76,
+          "historyGrade": 66
+        }
+      ],
+      "address": {
+        "street": "456 Oak Ave",
+        "city": "Elsewhere",
+        "postalCode": "67890",
+        "country": "USA"
+      }
+    }
+  ]
+}
+
